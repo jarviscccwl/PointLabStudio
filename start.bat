@@ -11,7 +11,7 @@ set "PY=.venv\Scripts\python.exe"
 if not exist "%PYW%" goto no_venv
 
 rem Check availability without loading the native libraries twice.
-"%PY%" -c "import importlib.util, sys; sys.exit(any(importlib.util.find_spec(name) is None for name in ('PySide6', 'open3d', 'numpy', 'scipy')))" >nul 2>nul
+"%PY%" -c "import importlib.util, sys; sys.exit(any(importlib.util.find_spec(name) is None for name in ('PySide6', 'open3d', 'numpy', 'scipy', 'mcap', 'rosbags', 'PIL', 'yaml', 'cv2')))" >nul 2>nul
 if errorlevel 1 goto bad_deps
 
 start "" "%PYW%" run.py %*
@@ -32,7 +32,7 @@ exit /b 1
 echo.
 echo [PointLab Studio] 依赖缺失或损坏，正在显示详细信息...
 echo.
-"%PY%" -c "import PySide6, open3d, numpy, scipy"
+"%PY%" -c "import PySide6, open3d, numpy, scipy, mcap, rosbags, PIL, yaml, cv2"
 echo.
 echo 修复方法：
 echo     .venv\Scripts\python.exe -m pip install -r requirements.txt

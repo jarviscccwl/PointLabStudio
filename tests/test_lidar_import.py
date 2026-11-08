@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import struct
 import tempfile
 import unittest
@@ -55,20 +56,20 @@ def msop(pkt_cnt: int, yaw_deg: float, *, surface: int = 1, radius: int = 1000,
          rows: dict | None = None, compressed: bool = False) -> bytes:
     buf = bytearray(1084)
     buf[0:4] = b"\x55\xaa\x5a\xa5"
-    struct.pack_into("<H", buf, 4, pkt_cnt)
+    struct.pack_into(">H", buf, 4, pkt_cnt)
     buf[6] = 0x02 if compressed else 0x00
     buf[8] = return_mode
-    struct.pack_into("<Q", buf, 10, sec)
+    buf[10:16] = sec.to_bytes(6, "big")
     buf[20] = 1
     buf[21] = 10
-    struct.pack_into("<H", buf, 22, cols - 1)
-    struct.pack_into("<h", buf, 24, int(round(yaw_deg * 100)))
+    struct.pack_into(">H", buf, 22, (pkt_cnt - 1) // (4 if return_mode == 0 else 2))
+    struct.pack_into(">h", buf, 24, int(round(yaw_deg * 100)))
     buf[26] = 0x01
     buf[27] = surface
     buf[30] = 0x70
     for i in range(260):
         value = (rows or {}).get(i, radius)
-        struct.pack_into("<HBB", buf, 32 + 4 * i, value, 7, attr)
+        struct.pack_into(">HBB", buf, 32 + 4 * i, value, 7, attr)
     return bytes(buf)
 
 
@@ -80,12 +81,12 @@ def difop2(*, yaw_offset_entry1: int = 0, pixel_pitch: list | None = None,
     buf[68] = 20
     buf[69] = 26
     for k in range(13):
-        struct.pack_into("<h", buf, 70 + 2 * k, yaw_offset_entry1 if k == 1 else 0)
+        struct.pack_into(">h", buf, 70 + 2 * k, yaw_offset_entry1 if k == 1 else 0)
     pitches = pixel_pitch or [int(round((-12.975 + 0.05 * i) * 100)) for i in range(520)]
     for i in range(520):
-        struct.pack_into("<h", buf, 96 + 2 * i, int(pitches[i]))
+        struct.pack_into(">h", buf, 96 + 2 * i, int(pitches[i]))
     for k in range(4):
-        struct.pack_into("<h", buf, 1136 + 2 * k, surface_offset)
+        struct.pack_into(">h", buf, 1136 + 2 * k, surface_offset)
     return bytes(buf)
 
 
@@ -132,6 +133,19 @@ class PcapReaderTests(unittest.TestCase):
 
 
 class Em4DecodeTests(unittest.TestCase):
+    def test_real_protocol_header_network_order(self):
+        # Independently captured 2026-10-14 header, not produced by msop().
+        header = bytes.fromhex("55aa5aa500010000040300006acefc9a00061ab0010a00001766010217007092")
+        payload = header + bytes.fromhex("03e80700") * 260 + bytes(12)
+        packet = rs_em4.parse_msop(payload)
+        self.assertEqual(packet.packet_index, 1)
+        self.assertEqual(packet.column, 0)
+        self.assertEqual(packet.columns, 1200)
+        self.assertAlmostEqual(packet.yaw_deg, 59.90)
+        self.assertEqual(int(packet.radius[0]), 1000)
+        self.assertEqual(packet.timestamp_ns, 1_791_949_978_400_048_000)
+        self.assertEqual(packet.time_mode, 3)
+
     def test_manual_angles_and_cartesian(self):
         pitch = [0] * 520
         pitch[22] = -1546
@@ -167,12 +181,13 @@ class Em4DecodeTests(unittest.TestCase):
         assembler = rs_em4.Em4FrameAssembler(rs_em4.Em4Calibration.nominal())
         rows = {row: 1000 for row in range(0, 260, 2)}
         for part in range(4):
-            assembler.add(msop(part + 1, 10.0, cols=1, return_mode=0, rows=rows))
+            assembler.add(msop(part + 1, 10.0, cols=1, return_mode=0, radius=2000, rows=rows))
         frame = assembler.flush()
         self.assertIsNotNone(frame)
         self.assertTrue(frame.dual_return)
         self.assertEqual(frame.columns, 1)
         self.assertEqual(frame.point_count, 520)
+        np.testing.assert_allclose(np.linalg.norm(frame.xyz, axis=1), 5.0, atol=1e-5)
 
     def test_compressed_packet_rejected(self):
         with self.assertRaises(rs_em4.Em4CompressedError):
@@ -249,14 +264,14 @@ class McapTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def _write_mcap(self, points: np.ndarray, intensity: np.ndarray) -> Path:
+    def _write_mcap(self, points: np.ndarray, intensity: np.ndarray, *,
+                    timestamp_ns: int | None = 1_500_000_000,
+                    record_time_ns: int = 1_700_000_000_000_000_000) -> Path:
         from mcap_ros2.writer import Writer as Ros2Writer
 
         path = self.dir / "cloud.mcap"
         ros = Ros2Writer(str(path))
-        schema = ros.register_msgdef(
-            "sensor_msgs/msg/PointCloud2",
-            """std_msgs/Header header
+        definition = """std_msgs/Header header
 uint32 height
 uint32 width
 sensor_msgs/PointField[] fields
@@ -279,8 +294,10 @@ string name
 uint32 offset
 uint8 datatype
 uint32 count
-""",
-        )
+"""
+        if timestamp_ns is None:
+            definition = definition.removeprefix("std_msgs/Header header\n")
+        schema = ros.register_msgdef("sensor_msgs/msg/PointCloud2", definition)
         layout = np.dtype([("x", "<f4"), ("y", "<f4"), ("z", "<f4"),
                            ("i", "<f4"), ("pad", "<f4")])
         packed = np.zeros(len(points), dtype=layout)
@@ -292,24 +309,45 @@ uint32 count
             {"name": "z", "offset": 8, "datatype": 7, "count": 1},
             {"name": "intensity", "offset": 12, "datatype": 7, "count": 1},
         ]
-        ros.write_message(
-            "/points",
-            schema,
-            {
-                "header": {"stamp": {"sec": 1, "nanosec": 500_000_000}, "frame_id": "lidar"},
-                "height": 1,
-                "width": len(points),
-                "fields": fields,
-                "is_bigendian": False,
-                "point_step": layout.itemsize,
-                "row_step": layout.itemsize * len(points),
-                "data": list(packed.tobytes()),
-                "is_dense": True,
+        stamp = timestamp_ns or 0
+        message = {
+            "header": {
+                "stamp": {"sec": stamp // 1_000_000_000, "nanosec": stamp % 1_000_000_000},
+                "frame_id": "lidar",
             },
-            1_700_000_000_000_000_000,
-        )
+            "height": 1,
+            "width": len(points),
+            "fields": fields,
+            "is_bigendian": False,
+            "point_step": layout.itemsize,
+            "row_step": layout.itemsize * len(points),
+            "data": list(packed.tobytes()),
+            "is_dense": True,
+        }
+        if timestamp_ns is None:
+            message.pop("header")
+        ros.write_message("/points", schema, message, record_time_ns)
         ros.finish()
         return path
+
+    def test_exact_and_missing_mcap_clocks_survive_import(self):
+        points = np.array([[1.0, 2.0, 3.0]], dtype=np.float32)
+        for stamp in [1_700_000_000_123_456_789, None, 0]:
+            with self.subTest(timestamp_ns=stamp):
+                recorded = 1_700_000_001_234_567_891
+                path = self._write_mcap(points, np.array([7], np.float32),
+                                        timestamp_ns=stamp, record_time_ns=recorded)
+                frame = next(mcap_reader.iter_frames(str(path), count=1))
+                self.assertEqual(frame.timestamp_ns, stamp)
+                self.assertEqual(frame.record_time_ns, recorded)
+                self.assertEqual(frame.frame_id, "" if stamp is None else "lidar")
+                self.assertIn("publish_time_ns", frame.metadata)
+                output = self.dir / ("export_" + str(stamp))
+                lidar_import.import_frames(str(path), str(output), count=1)
+                metadata = json.loads((output / "frames.json").read_text(encoding="utf-8"))["frame_metadata"][0]
+                self.assertEqual(metadata["timestamp_ns"], stamp)
+                self.assertEqual(metadata["record_time_ns"], recorded)
+                self.assertEqual(metadata["frame_id"], frame.frame_id)
 
     def test_pointcloud2_roundtrip(self):
         points = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]], np.float32)

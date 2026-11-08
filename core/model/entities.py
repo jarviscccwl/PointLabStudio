@@ -18,7 +18,7 @@ TIER_S = "S"  # < 100 万点
 TIER_M = "M"  # 100 万 ~ 1 亿
 TIER_L = "L"  # >= 1 亿
 
-COLOR_MODES = ["auto", "height", "intensity", "field", "rgb", "label", "none"]
+COLOR_MODES = ["height", "intensity", "rgb", "label", "field", "none"]
 
 
 def identity4() -> np.ndarray:
@@ -64,7 +64,7 @@ class CloudEntity(_BoundsMixin):
     path: Optional[str] = None
     xyz: Optional[np.ndarray] = None                 # (N,3) float32
     fields: dict = field(default_factory=dict)       # name -> ScalarField
-    color_mode: str = "auto"                         # auto/height/intensity/field/rgb/label/none
+    color_mode: str = "height"                       # height/intensity/rgb/label/field/none
     colormap: str = "default"
     color_field: str = ""                            # mode="field" 时着色的标量场名
     color_range: Optional[tuple] = None              # (vmin, vmax) 手动颜色范围；None=2–98 百分位

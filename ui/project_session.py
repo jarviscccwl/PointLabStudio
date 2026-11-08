@@ -87,6 +87,10 @@ class ProjectSessionMixin:
                 tree[key] = sorted(tree[key])
         state = {"entities": entities, "meshes": meshes, "tree": tree,
                  "camera": self.viewport.camera_state(), "clip": self._clip_state()}
+        if hasattr(self, "_recording_sources"):
+            recordings = self._recording_state()
+            recordings["browser"].pop("position", None)
+            state["recordings"] = recordings
         browser = getattr(self, "frame_browser", None)
         if browser is not None:
             state["browser"] = {
@@ -188,6 +192,34 @@ class ProjectSessionMixin:
             key in data for key in ("files", "derived", "meshes")
         ):
             raise ValueError("文件不是有效的 PointLab 工程。")
+        recordings = data.get("recordings", {})
+        if not isinstance(recordings, dict) or not isinstance(recordings.get("sources", []), list):
+            raise ValueError("工作区的数据源记录格式不正确。")
+        for source in recordings.get("sources", []):
+            if (not isinstance(source, dict) or not isinstance(source.get("path"), str)
+                    or not source["path"] or not isinstance(source.get("streams"), list)
+                    or any(not isinstance(value, str) for value in source["streams"])):
+                raise ValueError("工作区的数据源路径或话题列表不正确。")
+            bounds = source.get("range", {"mode": "all"})
+            if not isinstance(bounds, dict) or bounds.get("mode", "all") not in ("all", "frames", "time"):
+                raise ValueError("工作区的数据范围格式不正确。")
+            for field in ("first", "last", "start_seconds", "end_seconds", "origin_ns"):
+                if field in bounds:
+                    _require_number(bounds[field], f"recordings.range.{field}")
+        recording_browser = recordings.get("browser", {})
+        if not isinstance(recording_browser, dict):
+            raise ValueError("工作区的数据浏览设置格式不正确。")
+        for field in ("primary", "secondary", "camera"):
+            value = recording_browser.get(field)
+            if value is not None and (not isinstance(value, list) or len(value) != 2
+                                      or any(not isinstance(part, str) for part in value)):
+                raise ValueError("工作区的数据流选择格式不正确。")
+        for field in ("position", "tolerance_ms", "offset_ms", "point_size"):
+            if field in recording_browser:
+                _require_number(recording_browser[field], f"recordings.browser.{field}")
+        if recording_browser.get("calibration"):
+            from core.calibration import calibration_from_dict
+            calibration_from_dict(recording_browser["calibration"])
         for key in ("files", "derived", "meshes"):
             entries = data.get(key, [])
             if not isinstance(entries, list) or any(not isinstance(e, dict) for e in entries):

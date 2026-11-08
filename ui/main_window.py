@@ -29,7 +29,7 @@ from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QDialog, QFileDialog, QHBoxLayout, QLabel, QMainWindow, QMenu,
     QMessageBox, QPlainTextEdit, QProgressDialog, QScrollArea, QSlider, QSplitter, QToolButton,
-    QVBoxLayout, QWidget,
+    QStackedWidget, QVBoxLayout, QWidget,
 )
 
 from core.algorithms import registration, segmentation
@@ -39,6 +39,8 @@ from core.i18n import tr
 from core.plugin import load_plugins
 from core.settings import load_settings, save_settings
 from ui.project_session import ProjectSessionMixin
+from ui.recording_session import RecordingSessionMixin
+from core.io.recording import discover_sources, is_data_source
 from core.cancellation import OperationCancelled
 from core.commands import Command, History
 from core.commands.spec import get_spec
@@ -64,14 +66,15 @@ from ui.widgets.pipeline_dialog import PipelineDialog
 from ui.widgets.script_dialog import ScriptDialog
 from ui.widgets.frame_browser import FrameBrowser
 from ui.widgets.lidar_import_dialog import LidarImportDialog
+from ui.widgets.recording_browser import RecordingBrowser
 
-COLOR_SHORTCUT_MODES = ("height", "intensity", "rgb", "label", "field", "none", "auto")
+COLOR_SHORTCUT_MODES = tuple(COLOR_MODES)
 
 HELP_TEXT = """快捷键：
   ←/↑  上一个点云        →/↓  下一个点云
   R    重置视角          H    显示本帮助
   C    循环颜色模式      B    开关裁剪范围
-  1 高度 · 2 强度 · 3 RGB · 4 标签 · 5 标量场 · 6 单色 · 7 自动（视口或场景获得焦点时）
+  1 高度 · 2 强度 · 3 RGB · 4 标签 · 5 标量场 · 6 单色（视口或场景获得焦点时）
   Space 显示/隐藏当前选中点云
   +/=  增大点大小        -/_  减小点大小
   W/S  上/下平移相机     A/D  左/右平移相机
@@ -137,9 +140,17 @@ class ScanThread(QThread):
     def run(self):
         files = []
         directories = []
+        data_sources = []
+        try:
+            data_sources = discover_sources(self.paths, cancel=self.isInterruptionRequested)
+        except OperationCancelled:
+            return
+        except Exception as exc:
+            self.failed.emit(f"数据源识别失败: {exc}")
         for path in self.paths:
             try:
-                files.extend(collect_files(path, cancel=self.isInterruptionRequested))
+                files.extend(file for file in collect_files(path, cancel=self.isInterruptionRequested)
+                             if not is_data_source(file))
                 if os.path.isdir(path):
                     for folder, children, _names in os.walk(path):
                         if self.isInterruptionRequested():
@@ -152,7 +163,8 @@ class ScanThread(QThread):
                 self.failed.emit(f"收集失败: {path} — {exc}")
         if not self.isInterruptionRequested():
             self.done.emit({"files": sorted(set(files), key=natural_key),
-                            "directories": sorted(set(directories), key=natural_key)})
+                            "directories": sorted(set(directories), key=natural_key),
+                            "data_sources": data_sources})
 
 
 class LidarImportThread(QThread):
@@ -264,7 +276,7 @@ class EpsThread(QThread):
                 self.failed.emit(str(exc))
 
 
-class MainWindow(ProjectSessionMixin, QMainWindow):
+class MainWindow(RecordingSessionMixin, ProjectSessionMixin, QMainWindow):
     def __init__(self, start_path: str | None = None, theme: str = "dark"):
         super().__init__()
         self.setWindowTitle(tr("PointLab Studio — 点云综合处理平台"))
@@ -318,9 +330,10 @@ class MainWindow(ProjectSessionMixin, QMainWindow):
         self._build_ui()
         self._build_shortcuts()
         self._connect_signals()
+        self._init_recording_session()
         self._init_project_session()
 
-        self.log("PointLab Studio 已启动。拖入点云文件或文件夹即可查看。")
+        self.log("PointLab Studio 已启动。拖入采集包、点云、图片或文件夹即可查看。")
         if start_path:
             self.open_paths([start_path])
 
@@ -360,7 +373,11 @@ class MainWindow(ProjectSessionMixin, QMainWindow):
         panes.setHandleWidth(6)
         panes.addWidget(self.scene_panel)
         self.frame_browser = FrameBrowser(self.viewport)
-        panes.addWidget(self.frame_browser)
+        self.recording_browser = RecordingBrowser(self.theme, PointCloudViewport, self)
+        self.content_stack = QStackedWidget()
+        self.content_stack.addWidget(self.frame_browser)
+        self.content_stack.addWidget(self.recording_browser)
+        panes.addWidget(self.content_stack)
         panes.addWidget(self.overview_scroll)
         panes.setStretchFactor(0, 0)
         panes.setStretchFactor(1, 1)
@@ -409,7 +426,7 @@ class MainWindow(ProjectSessionMixin, QMainWindow):
         open_menu = QMenu(self.btn_open)
         open_menu.addAction("打开文件…", self._open_files_dialog)
         open_menu.addAction("打开文件夹…", self._open_folder_dialog)
-        open_menu.addAction("导入雷达包 (pcap / mcap)…", self._start_lidar_import)
+        open_menu.addAction("打开采集包 (PCAP / MCAP / BAG)…", self._start_lidar_import)
         self._recent_menu = open_menu.addMenu("最近文件")
         self._rebuild_recent_menu()
         self.btn_open.setMenu(open_menu)
@@ -501,9 +518,9 @@ class MainWindow(ProjectSessionMixin, QMainWindow):
         self.cmb_color.setObjectName("headerCombo")
         self.cmb_color.setMinimumWidth(84)
         color_keys = {mode: index for index, mode in enumerate(COLOR_SHORTCUT_MODES, 1)}
-        for mode, label in COLOR_MODE_LABELS.items():
-            self.cmb_color.addItem(f"{label}  [{color_keys[mode]}]", mode)
-        self.cmb_color.setToolTip("颜色模式：1 高度 · 2 强度 · 3 RGB · 4 标签 · 5 标量场 · 6 单色 · 7 自动；C 循环")
+        for mode in COLOR_SHORTCUT_MODES:
+            self.cmb_color.addItem(f"{color_keys[mode]}  {COLOR_MODE_LABELS[mode]}", mode)
+        self.cmb_color.setToolTip("颜色模式：1 高度 · 2 强度 · 3 RGB · 4 标签 · 5 标量场 · 6 单色；C 循环")
 
         self.sld_size = QSlider(Qt.Horizontal)
         self.sld_size.setRange(1, 20)
@@ -517,7 +534,7 @@ class MainWindow(ProjectSessionMixin, QMainWindow):
         self.btn_reset = QToolButton()
         self.btn_reset.setObjectName("headerBtn")
         self.btn_reset.setToolTip("重置视角 (R)")
-        self.btn_reset.clicked.connect(self.viewport.reset_view)
+        self.btn_reset.clicked.connect(self._reset_active_view)
         self._register_icon(self.btn_reset, "refresh")
 
         self.btn_navigation = QToolButton()
@@ -562,7 +579,7 @@ class MainWindow(ProjectSessionMixin, QMainWindow):
         self.btn_view.setObjectName("headerBtn")
         self.btn_view.setText("视图")
         view_menu = QMenu(self.btn_view)
-        view_menu.addAction("重置视角", self.viewport.reset_view)
+        view_menu.addAction("重置视角", self._reset_active_view)
         self.act_grid = view_menu.addAction("显示地面网格")
         self.act_grid.setCheckable(True)
         self.act_grid.setChecked(True)
@@ -862,6 +879,8 @@ class MainWindow(ProjectSessionMixin, QMainWindow):
         if self._restoring_project:
             return
         if entity is not None:
+            self._show_cloud_browser()
+        if entity is not None:
             for other in self.entities:
                 other.visible = other is entity or other.visibility_pinned
             if self._auto_mesh is not None:
@@ -908,6 +927,9 @@ class MainWindow(ProjectSessionMixin, QMainWindow):
 
     def _on_header_color(self, _index):
         if getattr(self, "_sync_guard", False):
+            return
+        if self.content_stack.currentWidget() is self.recording_browser:
+            self.recording_browser.set_color_mode(self.cmb_color.currentData())
             return
         entity = self.scene_panel.current_entity()
         if entity is None:
@@ -966,12 +988,16 @@ class MainWindow(ProjectSessionMixin, QMainWindow):
     def _on_header_size(self, value: int):
         if getattr(self, "_sync_guard", False):
             return
+        if self.content_stack.currentWidget() is self.recording_browser:
+            self.recording_browser.set_point_size(value / 2.0)
+            self.lbl_size.setText(f"{value / 2.0:.1f}")
+            return
         entity = self.scene_panel.current_entity()
         if entity is None:
             return
         entity.point_size = value / 2.0
         self.lbl_size.setText(f"{entity.point_size:.1f}")
-        self.overview.set_entity(entity)
+        self.overview.v_pointsize.setText(f"{entity.point_size:.1f}  px")
         self.viewport.set_point_size()
         self.frame_browser.set_reference(self._reference_entity())
 
@@ -1207,12 +1233,12 @@ class MainWindow(ProjectSessionMixin, QMainWindow):
                 return
             self._open_project_path(workspaces[0])
             return
-        packages = [p for p in paths if is_lidar_package(p)]
+        packages = [p for p in paths if os.path.isfile(p) and is_data_source(p)]
         if packages:
-            paths = [p for p in paths if not is_lidar_package(p)]
-            # 延后到事件循环：启动参数里的雷达包要等主窗口可见后再弹对话框
-            for package in packages:
-                QTimer.singleShot(0, lambda p=package: self._start_lidar_import(p))
+            paths = [p for p in paths if p not in packages]
+            prompt = any(os.path.splitext(p)[1].lower() in (".pcap", ".pcapng", ".mcap", ".bag", ".db3")
+                         for p in packages)
+            QTimer.singleShot(0, lambda: self._open_recording_sources(packages, prompt=prompt))
         if not paths:
             return
         if self._source_operation is not None:
@@ -1248,6 +1274,11 @@ class MainWindow(ProjectSessionMixin, QMainWindow):
         if not self._closing:
             self.scene_panel.add_directories(result["directories"])
             self._register_files(result["files"])
+            if result.get("data_sources"):
+                sources = result["data_sources"]
+                prompt = any(os.path.splitext(path)[1].lower() in (".pcap", ".pcapng", ".mcap", ".bag", ".db3")
+                             or os.path.isfile(os.path.join(path, "metadata.yaml")) for path in sources)
+                self._open_recording_sources(sources, prompt=prompt)
 
     def _register_files(self, files):
         if self._closing:
@@ -1445,7 +1476,8 @@ class MainWindow(ProjectSessionMixin, QMainWindow):
         if state:
             entity.visible = state.get("visible", True)
             entity.visibility_pinned = state.get("visibility_pinned", entity.visible)
-            entity.color_mode = state.get("color_mode", "auto")
+            mode = state.get("color_mode", "height")
+            entity.color_mode = mode if mode in COLOR_MODES else "height"
             entity.colormap = state.get("colormap", "default")
             entity.color_field = state.get("color_field", "")
             color_range = state.get("color_range")
@@ -1790,6 +1822,9 @@ class MainWindow(ProjectSessionMixin, QMainWindow):
         return "scene" if box.clickedButton() is scene else "disk" if box.clickedButton() is disk else None
 
     def _request_move_sources(self, paths, destination):
+        if any(is_data_source(path) for path in paths):
+            self.open_paths(paths)
+            return
         if self._source_operation is not None or self._scan_threads:
             self._flash_status("正在扫描或操作文件，请稍后再移动。", 6000)
             return
@@ -1984,6 +2019,10 @@ class MainWindow(ProjectSessionMixin, QMainWindow):
         self.scene_panel.select_entity(prv)
 
     def _cycle_color(self):
+        if self.content_stack.currentWidget() is self.recording_browser:
+            index = COLOR_MODES.index(self.recording_browser.color_mode)
+            self.cmb_color.setCurrentIndex((index + 1) % len(COLOR_MODES))
+            return
         targets = self.entities if not self.scene_panel.current_entity() else [self.scene_panel.current_entity()]
         for e in targets:
             i = COLOR_MODES.index(e.color_mode) if e.color_mode in COLOR_MODES else 0
@@ -2061,6 +2100,9 @@ class MainWindow(ProjectSessionMixin, QMainWindow):
 
     # ================= 处理命令（P2：滤波 + 撤销/重做） =================
     def _current_entity(self):
+        if self.content_stack.currentWidget() is self.recording_browser:
+            self._flash_status("请点击“当前点云加入场景”后使用点云处理工具。")
+            return None
         entity = self.scene_panel.current_entity()
         if entity is None:
             self.log("请先在左侧场景中选择一片点云")
@@ -2896,6 +2938,7 @@ class MainWindow(ProjectSessionMixin, QMainWindow):
         QApplication.instance().setStyleSheet(build_stylesheet(theme))
         self.viewport.set_theme(theme)
         self.frame_browser.set_theme(theme)
+        self.recording_browser.set_theme(theme)
         self.scene_panel.set_theme(theme)
         self.btn_theme.setToolTip("切换主题（当前：深色）" if theme == "dark" else "切换主题（当前：浅色）")
         self._apply_icons()
@@ -2917,9 +2960,21 @@ class MainWindow(ProjectSessionMixin, QMainWindow):
         self._update_status()
 
     def _on_fps(self, fps: float):
+        if self.content_stack.currentWidget() is self.recording_browser:
+            return
         self.status_fps.setText(f"{fps:.0f} FPS")
 
     def _update_status(self):
+        if self.content_stack.currentWidget() is self.recording_browser:
+            browser = self.recording_browser
+            total = sum(view.cloud.point_count for view in (browser.left, browser.right) if view.cloud is not None)
+            images = [view.frame.value for view in (browser.left, browser.right)
+                      if view.frame is not None and view.frame.kind == "image"]
+            details = [f"当前 {total:,} 点"] if total else []
+            details.extend(f"图像 {image.shape[1]} × {image.shape[0]}" for image in images)
+            self.status_points.setText(" · ".join(details) or "数据浏览")
+            self.status_mem.setText(f"帧缓存 {browser._cache_bytes / 1024**2:,.0f} MB")
+            return
         total = sum(e.point_count for e in self.entities)
         preview = sum(1 for e in self.entities if e.xyz is not None and e.is_preview)
         mem = sum(e.xyz.nbytes for e in self.entities if e.xyz is not None)
@@ -2956,13 +3011,13 @@ class MainWindow(ProjectSessionMixin, QMainWindow):
 
     # ================= 文件 =================
     def _open_files_dialog(self):
-        files, _ = QFileDialog.getOpenFileNames(self, "打开点云文件", self.settings.last_dir,
-                                                "点云文件 (*.bin *.pcd *.ply *.xyz *.xyzn *.xyzrgb *.pts *.las *.laz *.e57 *.npy *.npz *.txt *.csv);;所有文件 (*)")
+        files, _ = QFileDialog.getOpenFileNames(self, "打开文件", self.settings.last_dir,
+            "支持的数据 (*.pcap *.pcapng *.mcap *.bag *.db3 *.bin *.pcd *.ply *.xyz *.xyzn *.xyzrgb *.pts *.las *.laz *.e57 *.npy *.npz *.jpg *.jpeg *.png *.bmp *.tif *.tiff *.webp *.gif *.txt *.csv *.tsv *.log *.json *.yaml *.yml);;采集包 (*.pcap *.pcapng *.mcap *.bag *.db3);;点云 (*.bin *.pcd *.ply *.xyz *.xyzn *.xyzrgb *.pts *.las *.laz *.e57 *.npy *.npz);;图像 (*.jpg *.jpeg *.png *.bmp *.tif *.tiff *.webp *.gif);;文本与表格 (*.txt *.csv *.tsv *.log *.json *.yaml *.yml);;所有文件 (*)")
         if files:
             self.open_paths(files)
 
     def _open_folder_dialog(self):
-        folder = QFileDialog.getExistingDirectory(self, "打开点云文件夹", self.settings.last_dir)
+        folder = QFileDialog.getExistingDirectory(self, "打开文件夹 / ROS2 录制目录", self.settings.last_dir)
         if folder:
             self.open_paths([folder])
 
@@ -2980,25 +3035,13 @@ class MainWindow(ProjectSessionMixin, QMainWindow):
         path = preset if isinstance(preset, str) else None
         if not path:
             path, _ = QFileDialog.getOpenFileName(
-                self, "导入雷达包", self.settings.last_dir,
-                "雷达包 (*.pcap *.pcapng *.mcap);;所有文件 (*)")
+                self, "打开采集包", self.settings.last_dir,
+                "采集包 (*.pcap *.pcapng *.mcap *.bag *.db3);;所有文件 (*)")
         if not path:
             return
         path = os.path.abspath(path)
-        try:
-            info = inspect_source(path)
-        except Exception as exc:  # noqa: BLE001 — 直接展示给用户
-            QMessageBox.warning(self, "无法读取雷达包", str(exc))
-            return
-        stem = os.path.splitext(os.path.basename(path))[0]
-        default_dir = self._unique_output_dir(
-            os.path.join(os.path.dirname(path), f"{stem}_frames"))
-        dialog = LidarImportDialog(self, path, info.topics, default_dir, info.kind)
-        if dialog.exec() != QDialog.Accepted:
-            return
-        options = dialog.values()
         self.settings.last_dir = os.path.dirname(path)
-        self._launch_lidar_import(options)
+        self._open_recording_sources([path])
 
     def _launch_lidar_import(self, options: dict):
         thread = LidarImportThread(options, self)
@@ -3044,7 +3087,8 @@ class MainWindow(ProjectSessionMixin, QMainWindow):
     def _project_operation_blocked(self):
         blocked = bool(self._source_operation is not None or self._threads or self._scan_threads
                        or self._filter_thread is not None or self._eps_thread is not None
-                       or self._import_thread is not None)
+                       or self._import_thread is not None or self._recording_importing
+                       or any(thread.isRunning() for thread in self._recording_threads()))
         if blocked:
             self._flash_status("正在加载、处理或操作原文件，请完成后再操作工作区。", 6000)
         return blocked
@@ -3054,6 +3098,7 @@ class MainWindow(ProjectSessionMixin, QMainWindow):
             return False
         self._restoring_project = True
         try:
+            self._clear_recordings()
             self._clip_commit_timer.stop()
             self._set_tool(None)
             self.viewport.clear_measurement()
@@ -3218,6 +3263,7 @@ class MainWindow(ProjectSessionMixin, QMainWindow):
                     "max": [float(v) for v in clip["max"]] if clip.get("enabled") else None,
                 },
                 "files": files,
+                "recordings": self._recording_state(base),
                 "derived": derived,
                 "meshes": meshes,
                 "browser": {
@@ -3293,6 +3339,10 @@ class MainWindow(ProjectSessionMixin, QMainWindow):
         self._export_current_dialog(clipped=True)
 
     def _export_current_dialog(self, *, clipped=False):
+        if self.content_stack.currentWidget() is self.recording_browser:
+            if not clipped:
+                self.recording_browser.export_current()
+            return
         entity = self._current_entity()
         if entity is None:
             return
@@ -3410,7 +3460,8 @@ class MainWindow(ProjectSessionMixin, QMainWindow):
                                      path=None, xyz=xyz, fields=fields)
                 entity.visible = bool(entry.get("visible", True))
                 entity.visibility_pinned = bool(entry.get("visibility_pinned", entity.visible))
-                entity.color_mode = entry.get("color_mode", "auto")
+                mode = entry.get("color_mode", "height")
+                entity.color_mode = mode if mode in COLOR_MODES else "height"
                 entity.colormap = entry.get("colormap", "default")
                 entity.color_field = entry.get("color_field", "")
                 color_range = entry.get("color_range")
@@ -3471,6 +3522,7 @@ class MainWindow(ProjectSessionMixin, QMainWindow):
                 self._flash_status("部分工作区数据未能恢复，请查看日志", 6000)
                 return False
             self._mark_project_saved(path)
+            self._restore_recordings(data.get("recordings", {}), base)
             return True
         except Exception as exc:  # noqa: BLE001
             QMessageBox.warning(self, "打开失败", str(exc))
@@ -3492,13 +3544,16 @@ class MainWindow(ProjectSessionMixin, QMainWindow):
             event.ignore()
             return
         self._closing = True
+        self.recording_browser.cancel()
+        if self._recording_dialog is not None:
+            self._recording_dialog.reject()
         try:
             self.settings.window_geometry = bytes(self.saveGeometry().toBase64()).decode("ascii")
             self.settings.theme = self.theme
             save_settings(self.settings)
         except Exception:  # noqa: BLE001
             pass
-        threads = list(self._threads.values()) + self._scan_threads
+        threads = list(self._threads.values()) + self._scan_threads + self._recording_threads()
         if self._filter_thread is not None:
             threads.append(self._filter_thread)
         if self._eps_thread is not None:
@@ -3527,6 +3582,9 @@ class MainWindow(ProjectSessionMixin, QMainWindow):
         try:
             self.viewport.stop()
             self.frame_browser.stop()
+            self.recording_browser.stop()
+            for source in self._recording_sources.values():
+                source.close()
         except Exception:
             pass
         self._threads.clear()

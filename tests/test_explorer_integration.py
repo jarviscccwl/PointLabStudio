@@ -96,7 +96,11 @@ class ExplorerIntegrationTests(unittest.TestCase):
         self.window.log_view.setFocus()
         self.app.processEvents()
         QTest.keyClick(self.window.log_view, Qt.Key_1)
-        self.assertEqual(entity.color_mode, "auto")
+        self.assertEqual(entity.color_mode, "none")
+        self.assertEqual([self.window.cmb_color.itemData(i)
+                          for i in range(self.window.cmb_color.count())],
+                         list(COLOR_SHORTCUT_MODES))
+        self.assertNotIn("auto", COLOR_SHORTCUT_MODES)
 
     def test_project_preserves_import_roots_and_expansion(self):
         self.add_roots()
@@ -385,7 +389,7 @@ class ExplorerIntegrationTests(unittest.TestCase):
     def test_new_project_cancel_preserves_scene_and_discard_keeps_originals(self):
         from PySide6.QtWidgets import QMessageBox
         self.window._mark_project_saved(str(self.base / "current.pls"))
-        self.window.entities[0].color_mode = "height"
+        self.window.entities[0].color_mode = "intensity"
         with patch("ui.project_session.QMessageBox.question", return_value=QMessageBox.Cancel):
             self.assertFalse(self.window._new_project())
         self.assertEqual(len(self.window.entities), 6)
@@ -557,7 +561,7 @@ class ExplorerIntegrationTests(unittest.TestCase):
         button = self.window.scene_panel.empty.findChild(QPushButton)
         self.assertIsNotNone(button.menu(), "The initial Open button must offer files and folders")
         with patch("ui.main_window.QFileDialog.getOpenFileNames", return_value=([str(self.files[1])], "")):
-            next(a for a in button.menu().actions() if a.text() == "打开点云文件…").trigger()
+            next(a for a in button.menu().actions() if a.text() == "打开文件…").trigger()
         self.wait_idle()
         self.assertEqual([e.path for e in self.window.entities], [str(self.files[1])])
 

@@ -87,6 +87,8 @@ QPushButton#primary {
     font-weight: 600;
 }
 QPushButton#primary:hover { background: ${accent_hover}; }
+QPushButton#primary:pressed { background: ${accent}; }
+QPushButton#primary:disabled { background: ${panel2}; color: ${disabled}; }
 
 /* ---------- 输入控件 ---------- */
 QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit {
@@ -96,12 +98,17 @@ QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit {
     padding: 4px 8px;
     color: ${text};
     selection-background-color: ${accent};
+    selection-color: ${accent_text};
+    placeholder-text-color: ${text3};
 }
 QComboBox:hover, QSpinBox:hover, QDoubleSpinBox:hover, QLineEdit:hover {
     border-color: ${border_strong};
 }
 QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QLineEdit:focus {
     border-color: ${accent};
+}
+QComboBox:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QLineEdit:disabled {
+    color: ${disabled};
 }
 QComboBox::drop-down { border: none; width: 22px; }
 QComboBox::down-arrow {
@@ -144,6 +151,7 @@ QTreeWidget::item:selected, QListWidget::item:selected {
     background: ${selection};
     color: ${text};
 }
+QHeaderView { background: ${panel}; }
 QHeaderView::section {
     background: ${panel};
     color: ${text2};
@@ -152,6 +160,19 @@ QHeaderView::section {
     padding: 5px 8px;
     font-size: 12px;
 }
+QTableView {
+    background: ${panel};
+    alternate-background-color: ${panel2};
+    color: ${text};
+    border: 1px solid ${border};
+    border-radius: ${input}px;
+    gridline-color: ${border};
+    selection-background-color: ${selection};
+    selection-color: ${text};
+}
+QTableView::item { padding: 4px 8px; }
+QTableView::item:selected { background: ${selection}; color: ${text}; }
+QTableCornerButton::section { background: ${panel}; border: none; }
 
 /* ---------- 标签与分组 ---------- */
 QLabel { background: transparent; color: ${text}; }
@@ -180,7 +201,11 @@ QCheckBox::indicator {
     background: ${panel2};
 }
 QCheckBox::indicator:hover { border-color: ${accent}; }
-QCheckBox::indicator:checked { background: ${accent}; border-color: ${accent}; }
+QCheckBox::indicator:checked {
+    background: ${accent}; border-color: ${accent}; image: url(${check_icon});
+}
+QCheckBox:disabled { color: ${disabled}; }
+QCheckBox::indicator:disabled { border-color: ${border}; }
 
 /* ---------- 滑条 ---------- */
 QSlider::groove:horizontal {

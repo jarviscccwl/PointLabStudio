@@ -31,6 +31,8 @@ class ParamDialog(QDialog):
 
         form = QFormLayout()
         form.setSpacing(8)
+        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        form.setRowWrapPolicy(QFormLayout.WrapLongRows)
         for field in fields:
             kind = field.get("kind", "float")
             if kind == "choice":
@@ -50,10 +52,14 @@ class ParamDialog(QDialog):
                 widget.setRange(float(field.get("min", -1e9)), float(field.get("max", 1e9)))
                 widget.setValue(float(field.get("default", 0.0)))
             self._widgets[field["key"]] = widget
+            widget.setAccessibleName(field["label"])
             form.addRow(field["label"], widget)
         layout.addLayout(form)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Ok).setText("确定")
+        buttons.button(QDialogButtonBox.Ok).setObjectName("primary")
+        buttons.button(QDialogButtonBox.Cancel).setText("取消")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)

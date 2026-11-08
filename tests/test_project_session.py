@@ -113,7 +113,7 @@ class ProjectSessionTests(unittest.TestCase):
         self.window._mark_project_saved(str(self.base / "current.pls"))
         for attr, changed in (("name", "renamed.xyz"), ("visible", False),
                               ("visibility_pinned", True), ("point_size", 5),
-                              ("color_mode", "height"), ("colormap", "viridis"),
+                              ("color_mode", "intensity"), ("colormap", "viridis"),
                               ("color_field", "intensity"), ("color_range", (1, 9)),
                               ("path", str(self.base / "moved.xyz"))):
             with self.subTest(attr=attr):

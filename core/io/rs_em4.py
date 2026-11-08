@@ -71,10 +71,10 @@ class Em4Calibration:
             raise Em4FormatError("不是 EM4 DIFOP2 数据。")
         surface_count = payload[67] or 4
         pixels_per_half = payload[68] or 20
-        yaw = np.frombuffer(payload, dtype="<i2", count=13, offset=70).astype(np.float64) * 0.01
-        pitch = np.frombuffer(payload, dtype="<i2", count=ROWS_PER_COLUMN,
+        yaw = np.frombuffer(payload, dtype=">i2", count=13, offset=70).astype(np.float64) * 0.01
+        pitch = np.frombuffer(payload, dtype=">i2", count=ROWS_PER_COLUMN,
                               offset=96).astype(np.float64) * 0.01
-        surfaces = np.frombuffer(payload, dtype="<i2", count=4, offset=1136).astype(np.float64) * 0.01
+        surfaces = np.frombuffer(payload, dtype=">i2", count=4, offset=1136).astype(np.float64) * 0.01
         if not np.all(np.isfinite(pitch)) or float(np.ptp(pitch)) < 1.0:
             raise Em4FormatError("DIFOP2 的 PixelPitch 标定数据异常。")
         return cls(pitch, yaw, surfaces, int(pixels_per_half), int(surface_count))
@@ -106,6 +106,9 @@ class Em4MsopPacket:
     attribute: np.ndarray  # (260,) uint8
     return_mode: int
     compressed: bool = False
+    timestamp_ns: int = 0
+    time_mode: int = 0
+    raw_timestamp: bytes = b""
 
 
 def parse_msop(payload: bytes) -> Em4MsopPacket:
@@ -113,27 +116,41 @@ def parse_msop(payload: bytes) -> Em4MsopPacket:
         raise Em4FormatError("不是 EM4 MSOP 数据包。")
     if len(payload) < MSOP_SIZE:
         raise Em4FormatError(f"MSOP 长度不足：{len(payload)} < {MSOP_SIZE}。")
-    packet_index = struct.unpack_from("<H", payload, 4)[0]
+    packet_index = struct.unpack_from(">H", payload, 4)[0]
     compression = payload[6]
     if compression not in (0x00, 0x01):
         raise Em4CompressedError(
             "该 pcap 为点云压缩模式（roi_compression_mode=0x%02X）。"
             "请在雷达配置中关闭“点云压缩 / Compress”后重新录制，或提供一份非压缩包。" % compression
         )
+    if payload[26] != 1 or payload[30] != 0x70:
+        raise Em4FormatError("Unsupported EM4 packet mode or lidar type (only uncompressed EM4-F 0x70 is supported).")
+    if not 1 <= payload[27] <= 4:
+        raise Em4FormatError("Invalid EM4 mirror surface identifier.")
     return_mode = payload[8]
-    timestamp = float(struct.unpack_from("<Q", payload, 10)[0] & ((1 << 48) - 1))
-    timestamp += float(struct.unpack_from("<I", payload, 16)[0]) * 1e-6
-    columns = struct.unpack_from("<H", payload, 22)[0] + 1
-    yaw_deg = struct.unpack_from("<h", payload, 24)[0] * 0.01
+    seconds = int.from_bytes(payload[10:16], "big")
+    microseconds = int.from_bytes(payload[16:20], "big")
+    if microseconds >= 1_000_000:
+        raise Em4FormatError("MSOP 微秒时间戳超出范围。")
+    timestamp_ns = seconds * 1_000_000_000 + microseconds * 1000
+    timestamp = timestamp_ns / 1e9
+    columns = 1600 if compression == 1 else 1200
+    column = struct.unpack_from(">H", payload, 22)[0]
+    yaw_deg = struct.unpack_from(">h", payload, 24)[0] * 0.01
     surface = payload[27]
+    if return_mode not in (0, 4, 5, 6):
+        raise Em4FormatError(f"不支持的 EM4 回波模式：{return_mode}。")
     dual = return_mode == 0
     per_column = 4 if dual else 2
-    column = (packet_index - 1) // per_column
+    if not 1 <= packet_index <= columns * per_column:
+        raise Em4FormatError("MSOP 包序号超出范围。")
+    if column != (packet_index - 1) // per_column:
+        raise Em4FormatError("MSOP 列号与包序号不匹配。")
     part = (packet_index - 1) % per_column
     points = np.frombuffer(payload, dtype=np.uint8, count=POINTS_PER_PACKET * POINT_BYTES,
                            offset=POINT_OFFSET)
     groups = points.reshape(POINTS_PER_PACKET, POINT_BYTES)
-    radius = np.ascontiguousarray(groups[:, 0:2]).view("<u2").reshape(-1)
+    radius = np.ascontiguousarray(groups[:, 0:2]).view(">u2").reshape(-1)
     return Em4MsopPacket(
         timestamp=timestamp,
         packet_index=int(packet_index),
@@ -147,6 +164,9 @@ def parse_msop(payload: bytes) -> Em4MsopPacket:
         attribute=groups[:, 3].copy(),
         return_mode=int(return_mode),
         compressed=False,
+        timestamp_ns=timestamp_ns,
+        time_mode=payload[9],
+        raw_timestamp=payload[10:20],
     )
 
 
@@ -158,6 +178,11 @@ class Em4Frame:
     columns: int
     dual_return: bool = False
     noise_dropped: int = 0
+    timestamp_ns: int | None = None
+    record_time_ns: int | None = None
+    missing_packets: int = 0
+    partial: bool = False
+    metadata: dict = field(default_factory=dict)
 
     @property
     def point_count(self) -> int:
@@ -200,24 +225,30 @@ class Em4FrameAssembler:
         self._buffers = _FrameBuffers()
         self._dual = False
         self._seen = False
+        self._last_packet = 0
+        self._packet_ids: set[int] = set()
+        self._first_packet = None
         self.warnings: list[str] = []
 
     def calibrate(self, difop2: bytes) -> None:
         try:
             self.calibration = Em4Calibration.from_difop2(difop2)
-        except Em4FormatError:
-            pass
+        except Em4FormatError as exc:
+            self.warnings.append(str(exc))
 
     def add(self, payload: bytes) -> Em4Frame | None:
         packet = parse_msop(payload)
         finished = None
-        # 新一帧的首包（第 0 列 part 0）到来时收尾上一帧
-        if self._seen and packet.column == 0 and packet.part == 0:
+        # 包序号回绕时收尾上一帧，也保留缺失首包的部分帧。
+        if self._seen and packet.packet_index < self._last_packet:
             finished = self._finalize()
         if not self._seen:
             self._seen = True
             self._dual = packet.return_mode == 0
             self._buffers.timestamp = packet.timestamp
+            self._first_packet = packet
+        self._last_packet = packet.packet_index
+        self._packet_ids.add(packet.packet_index)
         buffers = self._buffers
         column = packet.column
         if column >= MAX_COLUMNS:
@@ -248,14 +279,16 @@ class Em4FrameAssembler:
 
     def _finalize(self) -> Em4Frame | None:
         buffers = self._buffers
-        needed = 0x0F if self._dual else 0x03
-        ready = [c for c in range(buffers.columns) if (int(buffers.parts[c]) & needed) == needed]
+        ready = np.flatnonzero(buffers.parts[:buffers.columns]).tolist()
         frame = None
         if ready:
             frame = self._build(buffers, ready)
         buffers.reset()
         self._seen = False
         self._dual = False
+        self._last_packet = 0
+        self._packet_ids.clear()
+        self._first_packet = None
         return frame
 
     def _build(self, buffers: _FrameBuffers, columns: list[int]) -> Em4Frame:
@@ -291,4 +324,9 @@ class Em4FrameAssembler:
             columns=len(columns),
             dual_return=self._dual,
             noise_dropped=noise,
+            timestamp_ns=self._first_packet.timestamp_ns,
+            missing_packets=self._first_packet.columns * (4 if self._dual else 2) - len(self._packet_ids),
+            partial=len(self._packet_ids) != self._first_packet.columns * (4 if self._dual else 2),
+            metadata={"time_mode": self._first_packet.time_mode,
+                      "raw_timestamp_hex": self._first_packet.raw_timestamp.hex()},
         )

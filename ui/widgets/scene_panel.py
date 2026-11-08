@@ -8,7 +8,7 @@ from pathlib import Path
 from PySide6.QtCore import QEvent, QItemSelectionModel, QMimeData, QPoint, QRect, QSize, Qt, QUrl, Signal
 from PySide6.QtGui import QBrush, QColor, QDrag
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QHeaderView, QInputDialog, QLabel, QMenu,
+    QAbstractItemView, QApplication, QHeaderView, QInputDialog, QLabel, QLineEdit, QMenu,
     QPushButton, QRubberBand, QStyle, QStyleOptionViewItem, QTreeWidget,
     QTreeWidgetItem, QVBoxLayout, QHBoxLayout, QWidget,
 )
@@ -20,6 +20,10 @@ ENTITY_ROLE = Qt.UserRole
 PATH_ROLE = Qt.UserRole + 1
 SOURCE_PATH_ROLE = Qt.UserRole + 2
 ORDER_ROLE = Qt.UserRole + 3
+RECORDING_ROLE = Qt.UserRole + 4
+GROUP_ROLE = Qt.UserRole + 5
+SEARCH_ROLE = Qt.UserRole + 6
+KIND_ROLE = Qt.UserRole + 7
 ROW_HEIGHT = 30
 
 
@@ -47,6 +51,15 @@ def _natural(text):
             for part in re.split(r"(\d+)", text)]
 
 
+def _filter_visible(item):
+    """Collapsed rows still belong to an action; filtered-out rows do not."""
+    while item is not None:
+        if item.isHidden():
+            return False
+        item = item.parent()
+    return True
+
+
 class SceneItem(QTreeWidgetItem):
     def __lt__(self, other):
         return (-(self.data(0, ORDER_ROLE) or 0), not bool(self.data(0, PATH_ROLE)),
@@ -59,6 +72,7 @@ class SceneTree(QTreeWidget):
     """Explorer gestures without Qt's automatic, premature model moves."""
     browse_requested = Signal(object)
     paths_dropped = Signal(object, object)
+    recording_requested = Signal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -75,6 +89,7 @@ class SceneTree(QTreeWidget):
         self.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setTextElideMode(Qt.ElideMiddle)
         self.setFrameShape(QTreeWidget.NoFrame)
         self.setExpandsOnDoubleClick(False)
         self.setSortingEnabled(True)
@@ -97,6 +112,7 @@ class SceneTree(QTreeWidget):
         self._skip_release = False
         self._internal_drag_paths = None
         self._drop_band = QRubberBand(QRubberBand.Rectangle, self.viewport())
+        self.filter_active = False
 
     def _check_rect(self, item):
         option = QStyleOptionViewItem()
@@ -148,12 +164,13 @@ class SceneTree(QTreeWidget):
     def _visible_rows(self):
         item = self.itemAt(QPoint(1, 0))
         if item is None and self.topLevelItemCount():
-            item = self.topLevelItem(0)
+            item = next((self.topLevelItem(index) for index in range(self.topLevelItemCount())
+                         if not self.topLevelItem(index).isHidden()), None)
         while item is not None:
             rect = self.visualItemRect(item)
             if rect.top() > self.viewport().height():
                 break
-            if rect.bottom() >= 0:
+            if rect.bottom() >= 0 and _filter_visible(item):
                 yield item, QRect(0, rect.y(), self.viewport().width(), rect.height())
             item = self.itemBelow(item)
 
@@ -222,7 +239,9 @@ class SceneTree(QTreeWidget):
             if self._press_modifiers & (Qt.ControlModifier | Qt.MetaModifier):
                 flags = QItemSelectionModel.Toggle | QItemSelectionModel.Rows
             self.setCurrentItem(item, 0, flags)
-            if item.data(0, PATH_ROLE):
+            if item.data(0, RECORDING_ROLE) is not None:
+                self.recording_requested.emit(item.data(0, RECORDING_ROLE))
+            elif item.data(0, PATH_ROLE):
                 item.setExpanded(not item.isExpanded())
             elif flags == (QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows):
                 self.browse_requested.emit(item.data(0, ENTITY_ROLE))
@@ -236,7 +255,7 @@ class SceneTree(QTreeWidget):
         item = self.itemAt(event.position().toPoint())
         if event.button() == Qt.LeftButton and item is not None:
             self._skip_release = True
-            if item.data(0, ENTITY_ROLE) is not None:
+            if item.data(0, ENTITY_ROLE) is not None or item.data(0, RECORDING_ROLE) is not None:
                 self.itemDoubleClicked.emit(item, 0)
         event.accept()
 
@@ -249,6 +268,8 @@ class SceneTree(QTreeWidget):
             item = self.currentItem()
             if item is not None and item.data(0, ENTITY_ROLE) is not None:
                 self.browse_requested.emit(item.data(0, ENTITY_ROLE))
+            elif item is not None and item.data(0, RECORDING_ROLE) is not None:
+                self.recording_requested.emit(item.data(0, RECORDING_ROLE))
 
     def eventFilter(self, watched, event):
         if watched is self.verticalScrollBar() and event.type() == QEvent.Wheel:
@@ -270,8 +291,13 @@ class SceneTree(QTreeWidget):
     def _selected_source_paths(self):
         paths = []
         def collect(item):
+            if not _filter_visible(item):
+                return
             entity = item.data(0, ENTITY_ROLE)
-            path = item.data(0, SOURCE_PATH_ROLE) or (entity.path if entity else None)
+            # A folder path would also move/delete unmatched or unlisted disk
+            # contents. During search only explicit matching files are eligible.
+            path = ((entity.path if entity else None) if self.filter_active else
+                    item.data(0, SOURCE_PATH_ROLE) or (entity.path if entity else None))
             if path:
                 paths.append(_absolute(path))
             for index in range(item.childCount()):
@@ -329,12 +355,20 @@ class ScenePanel(QWidget):
     reveal_source_requested = Signal(str)
     move_requested = Signal(object, str)
     files_open_requested = Signal(object)
+    recording_selected = Signal(object)
+    recording_remove_requested = Signal(str)
+    recording_options_requested = Signal(str)
+    recording_reload_requested = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("scenePanel")
         self.setAttribute(Qt.WA_StyledBackground, True)
         self._entities = []
+        self._recordings = []
+        self._recording_items = {}
+        self._recording_roots = {}
+        self._recording_groups = {}
         self._items = {}
         self._folders = {}
         self._roots = []
@@ -345,6 +379,8 @@ class ScenePanel(QWidget):
         self._clip_statistics = {}
         self._updating = False
         self._context_menu_widget = None
+        self._filter_query = ""
+        self._filter_expansion = None
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 12, 10, 12)
         root.setSpacing(8)
@@ -353,10 +389,17 @@ class ScenePanel(QWidget):
         title.setObjectName("sectionTitle")
         self.lbl_count = QLabel("0")
         self.lbl_count.setObjectName("dim")
+        self.lbl_count.setToolTip("匹配项 / 已加入场景的文件和话题总数")
         head.addWidget(title)
         head.addStretch(1)
         head.addWidget(self.lbl_count)
         root.addLayout(head)
+        self.search = QLineEdit()
+        self.search.setObjectName("sceneSearch")
+        self.search.setPlaceholderText("搜索文件、话题或数据源")
+        self.search.setClearButtonEnabled(True)
+        self.search.setToolTip("按名称或完整路径筛选；不会改变当前显示和选择。")
+        root.addWidget(self.search)
         self.list = SceneTree(self)
         self.list.setObjectName("sceneList")
         self.list.browse_requested.connect(self.entity_selected.emit)
@@ -365,38 +408,65 @@ class ScenePanel(QWidget):
         self.list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.list.customContextMenuRequested.connect(self._context_menu)
         self.list.paths_dropped.connect(self._on_drop)
+        self.list.recording_requested.connect(self.recording_selected.emit)
         root.addWidget(self.list, 1)
+        self.no_matches = QLabel("没有匹配的文件或话题\n清除搜索可显示全部内容")
+        self.no_matches.setObjectName("sceneNoMatches")
+        self.no_matches.setWordWrap(True)
+        self.no_matches.setAlignment(Qt.AlignCenter)
+        root.addWidget(self.no_matches, 1)
         self.empty = QWidget()
         layout = QVBoxLayout(self.empty)
         layout.setContentsMargins(0, 0, 0, 0)
-        hint = QLabel("还没有点云")
+        hint = QLabel("还没有数据")
         hint.setObjectName("sectionTitle")
         hint.setAlignment(Qt.AlignCenter)
-        sub = QLabel("拖入文件或文件夹，即可开始浏览\n只看点云无需保存工作区")
+        sub = QLabel("拖入采集包、点云、图片或文件夹\n先查看内容，再选择浏览")
         sub.setObjectName("dim")
         sub.setAlignment(Qt.AlignCenter)
-        button = QPushButton("打开点云或文件夹…")
+        button = QPushButton("打开文件或文件夹…")
         button.setObjectName("primary")
         open_menu = QMenu(button)
-        open_menu.addAction("打开点云文件…", self.open_requested.emit)
+        open_menu.addAction("打开文件…", self.open_requested.emit)
         open_menu.addAction("打开文件夹…", self.open_folder_requested.emit)
         button.setMenu(open_menu)
         layout.addWidget(hint)
         layout.addWidget(sub)
         layout.addWidget(button)
         root.addWidget(self.empty, 1)
+        self.search.textChanged.connect(self._apply_filter)
         self.set_theme("dark")
         self._refresh_chrome()
 
     def set_theme(self, theme):
         colors = get_theme(theme)
+        self.no_matches.setStyleSheet(f"color: {colors['text2']};")
         self._folder_icon = make_icon("folder", colors["warning"], 16)
         self._cloud_icon = make_icon("cloud", colors["accent"], 16)
+        self._recording_icon = make_icon("columns", colors["accent"], 16)
+        self._stream_icons = {
+            kind: make_icon(icon, colors[color], 16)
+            for kind, icon, color in [
+                ("pointcloud", "cloud", "accent"), ("image", "eye", "success"),
+                ("camera_info", "sliders", "success"), ("imu", "target", "warning"),
+                ("text", "list", "text2"), ("table", "columns", "text2"),
+                ("message", "list", "text2"),
+            ]
+        }
         self._status_brush = QBrush(QColor(colors["text2"]))
         for item in self._folders.values():
             item.setIcon(0, self._folder_icon)
         for item in self._items.values():
             item.setIcon(0, self._cloud_icon)
+            item.setForeground(1, self._status_brush)
+        for item in self._recording_groups.values():
+            item.setIcon(0, self._folder_icon)
+        for item in self._recording_roots.values():
+            item.setIcon(0, self._recording_icon)
+            item.setForeground(1, self._status_brush)
+        for item in self._recording_items.values():
+            item.setIcon(0, self._stream_icons.get(
+                item.data(0, KIND_ROLE), self._stream_icons["message"]))
             item.setForeground(1, self._status_brush)
 
     def _display_roots(self):
@@ -434,8 +504,20 @@ class ScenePanel(QWidget):
 
     def tree_state(self):
         return {"roots": self.roots(), "directories": sorted(self._directories),
-                "expanded": [path for path, item in self._folders.items() if item.isExpanded()],
+                "expanded": sorted(self._expanded_folders()),
                 "placements": dict(self._placements)}
+
+    def _expanded_folders(self):
+        expansion = self._filter_expansion or {}
+        return {path for path, item in self._folders.items()
+                if expansion.get(("folder", path), item.isExpanded())}
+
+    def _remap_filter_folders(self, mapped):
+        if self._filter_expansion is not None:
+            self._filter_expansion = {
+                (("folder", mapped(key[1])) if key and key[0] == "folder" else key): expanded
+                for key, expanded in self._filter_expansion.items()
+            }
 
     def restore_tree_state(self, state):
         if not isinstance(state, dict):
@@ -450,10 +532,8 @@ class ScenePanel(QWidget):
         self._placements = {_absolute(source): _absolute(logical)
                             for source, logical in placements.items()
                             if isinstance(source, str) and source and isinstance(logical, str) and logical}
-        self._rebuild()
         expanded = {_absolute(p) for p in state.get("expanded", []) if isinstance(p, str)}
-        for path, item in self._folders.items():
-            item.setExpanded(path in expanded)
+        self._rebuild(expanded=expanded)
 
     def remap_paths(self, old, new):
         old, new = _absolute(old), _absolute(new)
@@ -470,9 +550,10 @@ class ScenePanel(QWidget):
             return replaced(path, old, new)
         def logical_mapped(path):
             return mapped(replaced(path, old_logical, new_logical))
-        expanded = {logical_mapped(p) for p, item in self._folders.items() if item.isExpanded()}
+        expanded = {logical_mapped(path) for path in self._expanded_folders()}
         selected_folders = [logical_mapped(item.data(0, PATH_ROLE))
-                            for item in self.list.selectedItems() if item.data(0, PATH_ROLE)]
+                            for item in self._selected_items() if item.data(0, PATH_ROLE)]
+        self._remap_filter_folders(logical_mapped)
         self._roots = _minimal_paths([mapped(path) for path in self._roots])
         self._directories = {mapped(path) for path in self._directories}
         self._placements = {mapped(source): logical_mapped(logical)
@@ -535,9 +616,10 @@ class ScenePanel(QWidget):
         relocated_paths = [relocated(logical) for logical in occupied]
         if len(set(relocated_paths)) != len(set(occupied)):
             raise ValueError("目标位置已有同名文件或文件夹")
-        expanded = {relocated(path) for path, item in self._folders.items() if item.isExpanded()}
-        selected = [relocated(item.data(0, PATH_ROLE)) for item in self.list.selectedItems()
+        expanded = {relocated(path) for path in self._expanded_folders()}
+        selected = [relocated(item.data(0, PATH_ROLE)) for item in self._selected_items()
                     if item.data(0, PATH_ROLE)]
+        self._remap_filter_folders(relocated)
         placements = {source: relocated(logical) for source, logical in self._placements.items()}
         for source, _, target in moves:
             placements[source] = target
@@ -548,17 +630,121 @@ class ScenePanel(QWidget):
         self._entities = list(entities)
         self._rebuild()
 
+    def set_recordings(self, recordings):
+        self._recordings = list(recordings)
+        self._rebuild()
+
+    def recording_item(self, path, stream_id):
+        return (self._recording_roots.get(path) if stream_id is None else
+                self._recording_items.get((path, stream_id)))
+
+    def select_recording(self, path, stream_id):
+        item = self.recording_item(path, stream_id)
+        if item is not None:
+            parent = item.parent()
+            while parent is not None:
+                parent.setExpanded(True)
+                parent = parent.parent()
+            self.list.setCurrentItem(item)
+            self.list.scrollToItem(item)
+
+    def _insert_recordings(self):
+        from ui.widgets.source_overview import KIND_LABELS
+        self._recording_items = {}
+        self._recording_roots = {}
+        self._recording_groups = {}
+        for info, selected in self._recordings:
+            directory = os.path.dirname(info.path)
+            parent = self._folders.get(directory)
+            if parent is None:
+                if directory not in self._recording_groups:
+                    group = SceneItem(self.list, [os.path.basename(directory) or directory])
+                    group.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+                    group.setIcon(0, self._folder_icon)
+                    group.setData(0, GROUP_ROLE, directory)
+                    group.setData(0, SEARCH_ROLE, directory.casefold())
+                    group.setToolTip(0, directory)
+                    group.setSizeHint(0, QSize(0, ROW_HEIGHT))
+                    group.setExpanded(True)
+                    self._recording_groups[directory] = group
+                parent = self._recording_groups[directory]
+            selected_ids = set(selected)
+            selected_streams = [stream for stream in info.streams if stream.id in selected_ids]
+            root = SceneItem(parent, [os.path.basename(info.path),
+                                      f"{info.format} · {len(selected_streams)} 话题"])
+            root.setData(0, RECORDING_ROLE, (info.path, None))
+            root.setData(0, SEARCH_ROLE, info.path.casefold())
+            root.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+            root.setIcon(0, self._recording_icon)
+            root.setForeground(1, self._status_brush)
+            font = root.font(0)
+            font.setBold(True)
+            root.setFont(0, font)
+            root.setToolTip(0, f"{info.path}\n{info.format} · {len(selected_streams)} 个已选话题"
+                              "\n右键可查看数据包概览或重新读取")
+            root.setToolTip(1, root.text(1))
+            root.setSizeHint(0, QSize(0, ROW_HEIGHT))
+            root.setExpanded(True)
+            self._recording_roots[info.path] = root
+            for stream in selected_streams:
+                count = "待统计" if stream.count is None else f"{stream.count:,}"
+                label = KIND_LABELS.get(stream.kind, "消息")
+                # Keep the distinguishing end of long ROS topic names readable
+                # even when a narrow sidebar hides the status column.
+                name = ("/".join(stream.name.rstrip("/").split("/")[-2:])
+                        if stream.name.startswith("/") else stream.name)
+                item = SceneItem(root, [f"{label} · {name}", count])
+                item.setData(0, RECORDING_ROLE, (info.path, stream.id))
+                item.setData(0, SEARCH_ROLE, "\n".join((stream.name, stream.id, info.path)).casefold())
+                item.setData(0, KIND_ROLE, stream.kind)
+                item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+                item.setIcon(0, self._stream_icons.get(stream.kind, self._stream_icons["message"]))
+                item.setForeground(1, self._status_brush)
+                item.setSizeHint(0, QSize(0, ROW_HEIGHT))
+                item.setToolTip(0, f"{stream.name}\n{label} · {count}\n{stream.message_type}\n{info.path}")
+                item.setToolTip(1, f"{label} · {count}")
+                self._recording_items[(info.path, stream.id)] = item
+
+    def _tree_items(self, parent=None):
+        parent = parent if parent is not None else self.list.invisibleRootItem()
+        for index in range(parent.childCount()):
+            item = parent.child(index)
+            yield item
+            yield from self._tree_items(item)
+
+    @staticmethod
+    def _item_key(item):
+        if item is None:
+            return None
+        entity = item.data(0, ENTITY_ROLE)
+        if entity is not None:
+            return ("entity", id(entity))
+        path = item.data(0, PATH_ROLE)
+        if path:
+            return ("folder", path)
+        recording = item.data(0, RECORDING_ROLE)
+        if recording is not None:
+            return ("recording", *recording)
+        group = item.data(0, GROUP_ROLE)
+        return ("group", group) if group is not None else None
+
+    def _selected_items(self):
+        # QTreeWidget.selectedItems() omits hidden rows; a rebuild must retain
+        # their selection so search remains presentation-only.
+        return [item for item in self._tree_items() if item.isSelected()]
+
     def _rebuild(self, expanded=None, selected_folders=None):
-        selected_entities = [i.data(0, ENTITY_ROLE) for i in self.list.selectedItems()
-                             if i.data(0, ENTITY_ROLE) is not None]
-        current = self.current_entity()
+        selected = {self._item_key(item) for item in self._selected_items()}
+        current = self._item_key(self.list.currentItem())
+        branch_expansion = {self._item_key(item): item.isExpanded() for item in self._tree_items()
+                            if item.childCount()}
         if selected_folders is None:
-            selected_folders = [i.data(0, PATH_ROLE) for i in self.list.selectedItems()
+            selected_folders = [i.data(0, PATH_ROLE) for i in self._selected_items()
                                 if i.data(0, PATH_ROLE)]
         known = set(self._folders)
         strict_expansion = expanded is not None
         if expanded is None:
-            expanded = {path for path, item in self._folders.items() if item.isExpanded()}
+            expanded = self._expanded_folders()
         self._updating = True
         updates_enabled = self.list.updatesEnabled()
         self.list.setUpdatesEnabled(False)
@@ -589,14 +775,20 @@ class ScenePanel(QWidget):
             self._folder_item(path, max(candidates, key=len) if candidates else None)
         for order, entity in enumerate(self._entities, 1):
             self._insert_entity(entity, order)
+        self._insert_recordings()
         for path, item in self._folders.items():
             item.setExpanded(path in expanded if strict_expansion or path in known else True)
+            if strict_expansion and self._filter_expansion is not None:
+                self._filter_expansion[("folder", path)] = path in expanded
             item.setSelected(path in selected_folders)
-        for entity in selected_entities:
-            if id(entity) in self._items:
-                self._items[id(entity)].setSelected(True)
-        if current is not None and id(current) in self._items:
-            self.list.setCurrentItem(self._items[id(current)], 0, QItemSelectionModel.NoUpdate)
+        for item in self._tree_items():
+            key = self._item_key(item)
+            if not item.data(0, PATH_ROLE):
+                item.setSelected(key in selected)
+                if key in branch_expansion:
+                    item.setExpanded(branch_expansion[key])
+            if key == current:
+                self.list.setCurrentItem(item, 0, QItemSelectionModel.NoUpdate)
         self.list.setSortingEnabled(True)
         self.list.setUpdatesEnabled(updates_enabled)
         self._updating = False
@@ -612,6 +804,7 @@ class ScenePanel(QWidget):
         item.setData(0, PATH_ROLE, path)
         source = self.source_path(path)
         item.setData(0, SOURCE_PATH_ROLE, source)
+        item.setData(0, SEARCH_ROLE, f"{path}\n{source}".casefold())
         item.setToolTip(0, source)
         item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsDragEnabled | Qt.ItemIsDropEnabled)
         item.setIcon(0, self._folder_icon)
@@ -680,6 +873,7 @@ class ScenePanel(QWidget):
     def _update_item(self, entity):
         item = self._items[id(entity)]
         item.setText(0, entity.name)
+        item.setData(0, SEARCH_ROLE, f"{entity.name}\n{entity.path or ''}".casefold())
         item.setText(1, self._summary(entity))
         item.setToolTip(0, f"{entity.path or entity.name}\n{self._summary(entity)}")
         item.setToolTip(1, self._summary(entity))
@@ -690,6 +884,8 @@ class ScenePanel(QWidget):
             self._updating = True
             self._update_item(entity)
             self._updating = False
+            if self._filter_query:
+                self._refresh_chrome()
 
     def set_clip_statistics(self, statistics):
         self._clip_statistics = statistics
@@ -741,9 +937,54 @@ class ScenePanel(QWidget):
                 "selected": self._items[id(entity)].isSelected()}
 
     def _refresh_chrome(self):
-        self.lbl_count.setText(str(len(self._entities)))
-        has_items = bool(self._entities or self._roots or self._directories)
-        self.list.setVisible(has_items)
+        self._apply_filter()
+
+    def _apply_filter(self, _text=None):
+        query = self.search.text().strip().casefold()
+        total = len(self._entities) + len(self._recording_items)
+        matched = total
+        any_match = True
+        if query:
+            if self._filter_expansion is None:
+                self._filter_expansion = {}
+            for item in self._tree_items():
+                if item.childCount():
+                    self._filter_expansion.setdefault(self._item_key(item), item.isExpanded())
+            matched = 0
+
+            def filter_branch(item):
+                nonlocal matched
+                child_match = False
+                for index in range(item.childCount()):
+                    child_match = filter_branch(item.child(index)) or child_match
+                own_match = query in (item.data(0, SEARCH_ROLE) or item.text(0).casefold())
+                visible = own_match or child_match
+                item.setHidden(not visible)
+                if child_match:
+                    item.setExpanded(True)
+                recording = item.data(0, RECORDING_ROLE)
+                if visible and (item.data(0, ENTITY_ROLE) is not None or
+                                (recording is not None and recording[1] is not None)):
+                    matched += 1
+                return visible
+
+            any_match = False
+            for index in range(self.list.topLevelItemCount()):
+                any_match = filter_branch(self.list.topLevelItem(index)) or any_match
+        elif self._filter_query or self._filter_expansion is not None:
+            expansion = self._filter_expansion or {}
+            for item in self._tree_items():
+                item.setHidden(False)
+                key = self._item_key(item)
+                if key in expansion:
+                    item.setExpanded(expansion[key])
+            self._filter_expansion = None
+        self._filter_query = query
+        self.list.filter_active = bool(query)
+        self.lbl_count.setText(f"{matched} / {total}")
+        has_items = bool(self._entities or self._roots or self._directories or self._recordings)
+        self.list.setVisible(has_items and any_match)
+        self.no_matches.setVisible(has_items and not any_match)
         self.empty.setVisible(not has_items)
 
     def _on_visibility(self, item, column):
@@ -755,16 +996,22 @@ class ScenePanel(QWidget):
                 self.visibility_changed.emit(entity)
 
     def _on_double_click(self, item, _column):
+        recording = item.data(0, RECORDING_ROLE)
+        if recording is not None:
+            self.recording_selected.emit(recording)
+            return
         entity = item.data(0, ENTITY_ROLE)
         if entity is not None:
             self.focus_requested.emit(entity)
 
     def _selection_payload(self):
-        selected = self.list.selectedItems()
+        selected = [item for item in self.list.selectedItems() if _filter_visible(item)]
         folders = _minimal_paths([item.data(0, PATH_ROLE) for item in selected
-                                  if item.data(0, PATH_ROLE)])
+                                  if item.data(0, PATH_ROLE) and not self.list.filter_active])
         selected_ids = set()
         def collect(item):
+            if not _filter_visible(item):
+                return
             entity = item.data(0, ENTITY_ROLE)
             if entity is not None:
                 selected_ids.add(id(entity))
@@ -780,14 +1027,30 @@ class ScenePanel(QWidget):
         item = self.list.itemAt(pos)
         if item is None:
             return
+        recording = item.data(0, RECORDING_ROLE)
+        if recording is not None:
+            menu = QMenu(self)
+            self._context_menu_widget = menu
+            menu.addAction("查看", lambda: self.recording_selected.emit(recording))
+            menu.addAction("数据包概览 / 重新选择…",
+                           lambda: self.recording_options_requested.emit(recording[0]))
+            menu.addAction("重新读取数据源", lambda: self.recording_reload_requested.emit(recording[0]))
+            menu.addSeparator()
+            menu.addAction("打开文件所在文件夹", lambda: self.reveal_source_requested.emit(recording[0]))
+            menu.addAction("移出该数据源", lambda: self.recording_remove_requested.emit(recording[0]))
+            menu.popup(self.list.viewport().mapToGlobal(pos))
+            return
         if not item.isSelected():
             self.list.setCurrentItem(item, 0, (QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows))
         payload = self._selection_payload()
-        single = len(self.list.selectedItems()) == 1
+        single = sum(_filter_visible(selected) for selected in self.list.selectedItems()) == 1
         entity = item.data(0, ENTITY_ROLE)
         path = item.data(0, SOURCE_PATH_ROLE) or (entity.path if entity else None)
         menu = QMenu(self)
         self._context_menu_widget = menu
+        if self.list.filter_active:
+            menu.addAction("筛选中：仅操作匹配的文件").setEnabled(False)
+            menu.addSeparator()
         if entity is not None and single:
             menu.addAction("聚焦视图", lambda: self.focus_requested.emit(entity))
             menu.addAction("重新加载", lambda: self.reload_requested.emit(entity))
@@ -799,7 +1062,10 @@ class ScenePanel(QWidget):
                                self.visibility_selection_requested.emit(payload, action))
             menu.addSeparator()
         if path and single:
-            menu.addAction("重命名", lambda: self._rename(path))
+            rename = menu.addAction("重命名", lambda: self._rename(path))
+            if item.data(0, PATH_ROLE) and self.list.filter_active:
+                rename.setEnabled(False)
+                rename.setToolTip("清除搜索后可重命名整个文件夹。")
         if single:
             reveal = menu.addAction("打开文件所在文件夹")
             reveal.setEnabled(bool(path))
@@ -807,7 +1073,8 @@ class ScenePanel(QWidget):
                 reveal.triggered.connect(lambda: self.reveal_source_requested.emit(path))
             else:
                 reveal.setToolTip("此处理结果没有独立源文件。")
-        menu.addAction("删除", lambda: self.remove_selection_requested.emit(payload))
+        remove = menu.addAction("删除", lambda: self.remove_selection_requested.emit(payload))
+        remove.setEnabled(bool(payload["entities"] or payload["folders"] or payload["source_paths"]))
         menu.popup(self.list.viewport().mapToGlobal(pos))
 
     def _rename(self, path):

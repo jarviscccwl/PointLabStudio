@@ -86,34 +86,29 @@ def _save_frame(path: str, xyz: np.ndarray, intensity: np.ndarray | None, limit:
 
 def _iter_pcap_frames(path: str, cancel=None, drop_noise: bool = True,
                       min_range: float = 0.0, warnings: list | None = None):
-    assembler = rs_em4.Em4FrameAssembler(drop_noise=drop_noise, min_range_m=min_range)
-    msop_seen = 0
-    difop_seen = False
-    for datagram in pcap_reader.iter_udp_datagrams(path, cancel=cancel):
-        payload = datagram.payload
-        if payload[:4] == rs_em4.DIFOP2_MAGIC:
-            assembler.calibrate(payload)
-            difop_seen = True
-            continue
-        if payload[:4] in (rs_em4.MSOP_MAGIC, rs_em4.MSOP_FRAGMENT_MAGIC):
-            if payload[:4] == rs_em4.MSOP_FRAGMENT_MAGIC:
-                raise LidarImportError(
-                    "该 pcap 为分片/压缩 MSOP（55aa5a02），当前只支持非压缩单包模式。"
-                )
-            msop_seen += 1
-            frame = assembler.add(payload)
-            if frame is not None:
-                yield frame
-    frame = assembler.flush()
-    if frame is not None:
-        yield frame
-    if not msop_seen:
-        raise LidarImportError(
-            "pcap 中没有找到 EM4 MSOP 数据包（端口 6699）。"
-            "请确认录制时雷达工作在非压缩模式，且抓包包含 UDP 6699 端口。"
-        )
-    if warnings is not None and not difop_seen:
-        warnings.append("未发现 DIFOP2 标定包，已使用标称角度；如角度有偏差请重新录制含 7766 端口的抓包。")
+    from core.io.pcap_source import PcapSource
+
+    source = PcapSource(path, drop_noise=drop_noise, min_range_m=min_range)
+    try:
+        index = source.build_index(cancel=cancel)
+        if warnings is not None:
+            warnings.extend(source.info.warnings)
+        if not index:
+            raise LidarImportError("pcap 中没有找到受支持的 EM4 MSOP 数据包（默认端口 6699）。")
+        # Preserve the historical single-sensor import API. The recording browser
+        # exposes every sensor stream independently.
+        stream_id = next(iter(index))
+        for ref in index[stream_id]:
+            data = source.read_frame(stream_id, ref.index, cancel=cancel)
+            metadata = data.metadata
+            yield rs_em4.Em4Frame(data.value.xyz, data.value.field("intensity"),
+                (data.timestamp_ns or 0) / 1e9, 0,
+                dual_return=metadata["return_mode"] == 0,
+                timestamp_ns=data.timestamp_ns, record_time_ns=data.record_time_ns,
+                missing_packets=metadata["missing_packets"], partial=metadata["partial"],
+                metadata=metadata)
+    finally:
+        source.close()
 
 
 def import_frames(path: str, output_dir: str, topic: str | None = None, start: int = 0,
@@ -134,6 +129,7 @@ def import_frames(path: str, output_dir: str, topic: str | None = None, start: i
     written = 0
     total_points = 0
     warnings: list[str] = []
+    frame_metadata: list[dict] = []
 
     def frames():
         if kind == "mcap":
@@ -156,6 +152,12 @@ def import_frames(path: str, output_dir: str, topic: str | None = None, start: i
             warnings.append("双回波数据仅导入第一次回波。")
         target = os.path.join(output_dir, f"{prefix}_{number:06d}.npy")
         total_points += _save_frame(target, frame.xyz, frame.intensity, max_points)
+        timestamp_ns = getattr(frame, "timestamp_ns", None)
+        metadata = dict(getattr(frame, "metadata", {}) or {})
+        metadata.update(timestamp_ns=timestamp_ns,
+                        record_time_ns=getattr(frame, "record_time_ns", None),
+                        source_index=start + number, file=os.path.basename(target))
+        frame_metadata.append(metadata)
         files.append(target)
         written += 1
         if progress is not None:
@@ -173,6 +175,7 @@ def import_frames(path: str, output_dir: str, topic: str | None = None, start: i
         "created": time.strftime("%Y-%m-%d %H:%M:%S"),
         "files": [os.path.basename(f) for f in files],
         "warnings": sorted(set(warnings)),
+        "frame_metadata": frame_metadata,
     }
     with open(os.path.join(output_dir, "frames.json"), "w", encoding="utf-8") as handle:
         json.dump(manifest, handle, ensure_ascii=False, indent=2)
