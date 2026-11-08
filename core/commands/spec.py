@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable, Optional, Tuple
 
 from core.cancellation import CancelCb
 from core.model.entities import CloudEntity
+from core.progress import ProgressCb
 
-ProgressCb = Optional[Callable[[float], None]]
 ApplyFn = Callable[[CloudEntity, dict, ProgressCb, CancelCb], CloudEntity]
 
 

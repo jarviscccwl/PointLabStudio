@@ -10,8 +10,8 @@ set "PY=.venv\Scripts\python.exe"
 
 if not exist "%PYW%" goto no_venv
 
-rem Dependency self-check: keep the console visible with a reason instead of failing silently.
-"%PY%" -c "import PySide6, open3d, numpy, scipy" >nul 2>nul
+rem Check availability without loading the native libraries twice.
+"%PY%" -c "import importlib.util, sys; sys.exit(any(importlib.util.find_spec(name) is None for name in ('PySide6', 'open3d', 'numpy', 'scipy')))" >nul 2>nul
 if errorlevel 1 goto bad_deps
 
 start "" "%PYW%" run.py %*

@@ -18,7 +18,9 @@ try {
     if (-not $PayloadPath) {
         & $python -B -m PyInstaller --noconfirm --clean --workpath (Join-Path $work 'pyinstaller') --distpath (Join-Path $work 'payload') (Join-Path $PSScriptRoot 'PointLabStudio.spec')
         if ($LASTEXITCODE -ne 0) { throw 'PyInstaller build failed.' }
-        $PayloadPath = (Get-ChildItem -LiteralPath (Join-Path $work 'payload') -Filter '*.exe' | Select-Object -First 1).FullName
+        $releaseVersion = & $python -B -c "from core import __version__; print(__version__)"
+        if ($LASTEXITCODE -ne 0) { throw 'Could not read the application version.' }
+        $PayloadPath = Join-Path $work "payload\PointLabStudio-v$releaseVersion-Windows-x64.exe"
     }
     $payload = Get-Item -LiteralPath $PayloadPath
     try {
@@ -37,15 +39,25 @@ using System.Reflection;
 [assembly: AssemblyFileVersion("$version")]
 [assembly: AssemblyInformationalVersion("$version")]
 "@ | Set-Content -LiteralPath $metadata -Encoding UTF8
-    Add-Type -AssemblyName System.Drawing
-    $iconPath = Join-Path $work 'launcher.ico'
-    $icon = [Drawing.Icon]::ExtractAssociatedIcon($payload.FullName)
-    $iconStream = [IO.File]::Create($iconPath)
-    try { $icon.Save($iconStream) } finally { $iconStream.Dispose(); $icon.Dispose() }
+    $iconPath = Join-Path $work 'pyinstaller\PointLabStudio\app.ico'
+    if (-not (Test-Path -LiteralPath $iconPath)) { throw 'Multi-resolution app.ico is missing. Run a full build first.' }
     $staging = Join-Path $work $name
     & $compiler /nologo /codepage:65001 /target:winexe /platform:x64 /optimize+ "/out:$staging" "/win32icon:$iconPath" "/resource:$($payload.FullName),PointLabPayload" $metadata (Join-Path $PSScriptRoot 'Launcher.cs')
     if ($LASTEXITCODE -ne 0) { throw 'Launcher build failed.' }
     Move-Item -LiteralPath $staging -Destination (Join-Path $dist $name) -Force
+    # Reusing the release filename otherwise leaves Explorer's old icon cached.
+    if (-not ('PointLabShell' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class PointLabShell {
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    public static extern void SHChangeNotify(uint eventId, uint flags, string path, IntPtr unused);
+}
+'@
+    }
+    [PointLabShell]::SHChangeNotify(0x2000, 0x1005, (Join-Path $dist $name), [IntPtr]::Zero)
+    [PointLabShell]::SHChangeNotify(0x8000000, 0x1000, $null, [IntPtr]::Zero)
     Write-Output "Built: $(Join-Path $dist $name)"
 } finally {
     $env:TEMP, $env:TMP, $env:PYINSTALLER_CONFIG_DIR, $env:PYGFX_DATA_DIR = $oldTemp, $oldTmp, $oldConfig, $oldGpu

@@ -8,23 +8,13 @@
 
 from __future__ import annotations
 
-from typing import Callable, Optional
-
-import numpy as np
-
 from core.cancellation import CancelCb, check_cancel
 from core.commands import Command, run_command
 from core.commands.spec import get_spec, labels
 from core.model.entities import CloudEntity
-
-ProgressCb = Optional[Callable[[float], None]]
+from core.progress import ProgressCb, report_progress as _report
 
 STEP_LABELS = labels()
-
-
-def _report(progress: ProgressCb, value: float):
-    if progress is not None:
-        progress(float(np.clip(value, 0.0, 1.0)))
 
 
 def apply_step(entity: CloudEntity, step, progress: ProgressCb = None,

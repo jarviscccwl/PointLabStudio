@@ -1,0 +1,6 @@
+*
+!requirements.txt
+!requirements-build.txt
+!packaging/
+packaging/*
+!packaging/Dockerfile.linux

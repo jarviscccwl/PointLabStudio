@@ -42,16 +42,20 @@ class History:
     def undo(self) -> Optional[str]:
         if not self._undo_stack:
             return None
-        entry = self._undo_stack.pop()
-        entry.undo()
+        entry = self._undo_stack[-1]
+        if entry.undo() is False:
+            return None
+        self._undo_stack.pop()
         self._redo_stack.append(entry)
         return entry.label
 
     def redo(self) -> Optional[str]:
         if not self._redo_stack:
             return None
-        entry = self._redo_stack.pop()
-        entry.redo()
+        entry = self._redo_stack[-1]
+        if entry.redo() is False:
+            return None
+        self._redo_stack.pop()
         self._undo_stack.append(entry)
         return entry.label
 

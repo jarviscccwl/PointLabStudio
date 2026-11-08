@@ -23,6 +23,12 @@ _TEMPLATE = (
 )
 
 ICON_BODIES = {
+    "cloud": '<circle cx="6" cy="7" r="1.5"/><circle cx="16" cy="5" r="1.5"/>'
+             '<circle cx="12" cy="12" r="1.5"/><circle cx="5" cy="17" r="1.5"/>'
+             '<circle cx="19" cy="15" r="1.5"/><circle cx="13" cy="20" r="1.5"/>',
+    "chevron-left": '<path d="m15 5-7 7 7 7"/>',
+    "chevron-right": '<path d="m9 5 7 7-7 7"/>',
+    "columns": '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/>',
     # 文件/工程
     "folder": '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
     "folder-plus": '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>'

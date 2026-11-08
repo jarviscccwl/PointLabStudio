@@ -29,17 +29,26 @@ from PySide6.QtCore import QBuffer, QIODevice, Qt
 from PySide6.QtGui import QImage, QPainter
 from PySide6.QtSvg import QSvgRenderer
 
-icon_image = QImage(256, 256, QImage.Format_ARGB32)
-icon_image.fill(Qt.transparent)
-painter = QPainter(icon_image)
-QSvgRenderer(str(root / "resources" / "app.svg")).render(painter)
-painter.end()
-buffer = QBuffer()
-buffer.open(QIODevice.WriteOnly)
-icon_image.save(buffer, "PNG")
-png = bytes(buffer.data())
+sizes = (16, 20, 24, 32, 40, 48, 64, 128, 256)
+entries, images = [], []
+offset = 6 + 16 * len(sizes)
+renderer = QSvgRenderer(str(root / "resources" / "app.svg"))
+for size in sizes:
+    icon_image = QImage(size, size, QImage.Format_ARGB32)
+    icon_image.fill(Qt.transparent)
+    painter = QPainter(icon_image)
+    painter.setRenderHint(QPainter.Antialiasing)
+    renderer.render(painter)
+    painter.end()
+    buffer = QBuffer()
+    buffer.open(QIODevice.WriteOnly)
+    icon_image.save(buffer, "PNG")
+    png = bytes(buffer.data())
+    entries.append(struct.pack("<BBBBHHII", size % 256, size % 256, 0, 0, 1, 32, len(png), offset))
+    images.append(png)
+    offset += len(png)
 icon = Path(CONF["workpath"]) / "app.ico"
-icon.write_bytes(struct.pack("<HHH", 0, 1, 1) + struct.pack("<BBBBHHII", 0, 0, 0, 0, 1, 32, len(png), 22) + png)
+icon.write_bytes(struct.pack("<HHH", 0, 1, len(sizes)) + b"".join(entries) + b"".join(images))
 datas = [(str(root / "resources"), "resources")]
 for package in ("pygfx.data_files", "pygfx.renderers.wgpu.wgsl", "wgpu", "dash", "plotly"):
     datas += collect_data_files(package)
@@ -63,6 +72,9 @@ a = Analysis(
     hiddenimports=[
         "wgpu.backends.auto", "wgpu.backends.wgpu_native", "rendercanvas.qt",
         "laspy", "lazrs", "laspy._compression.lazrsbackend", "pye57", "pye57.libe57",
+        "mcap", "mcap.reader", "mcap.stream_reader", "mcap.summary", "mcap.records",
+        "mcap_ros2", "mcap_ros2.reader", "mcap_ros2.writer", "mcap_ros2.decoder",
+        "mcap_ros2._dynamic", "mcap_ros2._cdr", "lz4", "lz4.frame", "zstandard",
     ],
     excludes=["tkinter", "IPython", "jupyter", "notebook", "pytest", "_pytest", "py", "pip",
               "ipykernel", "debugpy", "jupyter_client", "jupyter_core", "torch", "tensorflow", "mitsuba"],

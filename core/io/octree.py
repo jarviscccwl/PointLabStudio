@@ -16,13 +16,11 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Callable, Optional
 
 import numpy as np
 
 from core.cancellation import CancelCb, check_cancel
-
-ProgressCb = Optional[Callable[[float], None]]
+from core.progress import ProgressCb
 
 
 @dataclass

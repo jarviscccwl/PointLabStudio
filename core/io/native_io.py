@@ -11,8 +11,7 @@
 from __future__ import annotations
 
 import os
-import struct
-from typing import Optional, Tuple
+from typing import Optional
 
 import numpy as np
 

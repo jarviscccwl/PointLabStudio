@@ -2,13 +2,15 @@
 
 from dataclasses import replace
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QHBoxLayout, QLabel, QSizePolicy, QSplitter,
     QToolButton, QVBoxLayout, QWidget,
 )
 
 from ui.viewport import PointCloudViewport
+from ui.theme import get_theme
+from ui.theme.icons import make_icon
 
 
 class FrameBrowser(QWidget):
@@ -30,9 +32,11 @@ class FrameBrowser(QWidget):
         self.previous = QToolButton()
         self.previous.setText("‹")
         self.previous.setToolTip("上一帧（← / ↑）")
+        self.previous.setAccessibleName("上一帧")
         self.next = QToolButton()
         self.next.setText("›")
         self.next.setToolTip("下一帧（→ / ↓）")
+        self.next.setAccessibleName("下一帧")
         self.position = QLabel("0 / 0")
         self.position.setObjectName("metric")
         self.compare = QToolButton()
@@ -67,6 +71,7 @@ class FrameBrowser(QWidget):
         primary.camera_changed.connect(lambda: self._sync_camera(primary))
         primary.navigation_changed.connect(lambda _: self._sync_camera(primary))
         self.set_current(None, -1, 0)
+        self.set_theme(primary.theme)
 
     def _pane(self, viewport):
         pane = QWidget()
@@ -83,7 +88,7 @@ class FrameBrowser(QWidget):
 
     def _toggle_comparison(self, enabled):
         if enabled and self.secondary is None:
-            self.secondary = PointCloudViewport(theme=self.primary.theme)
+            self.secondary = PointCloudViewport(theme=self.primary.theme, parent=self)
             self.secondary_pane, self.secondary_title = self._pane(self.secondary)
             self.splitter.addWidget(self.secondary_pane)
             self.secondary.camera_changed.connect(lambda: self._sync_camera(self.secondary))
@@ -166,6 +171,15 @@ class FrameBrowser(QWidget):
             self.secondary.reset_view()
 
     def set_theme(self, theme):
+        color = get_theme(theme)["text"]
+        for button, name in ((self.previous, "chevron-left"), (self.next, "chevron-right"),
+                             (self.compare, "columns")):
+            button.setIcon(make_icon(name, color))
+            button.setIconSize(QSize(18, 18))
+            button.setMinimumSize(32, 30)
+        self.previous.setText("")
+        self.next.setText("")
+        self.compare.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         if self.secondary is not None:
             self.secondary.set_theme(theme)
 

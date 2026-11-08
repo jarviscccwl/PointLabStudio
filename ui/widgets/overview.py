@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from core.color.colormaps import rgb_has_color
 from core.model.entities import CloudEntity
@@ -46,6 +46,7 @@ def _row(label: str, value_text: str = "—", value_font: str = "valueText"):
     value = QLabel(value_text)
     value.setObjectName(value_font)
     value.setWordWrap(True)
+    value.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
     value.setTextInteractionFlags(Qt.TextSelectableByMouse)
     lay.addWidget(caption)
     lay.addWidget(value)
@@ -72,6 +73,7 @@ class OverviewPanel(QWidget):
         self.lbl_name = QLabel("—")
         self.lbl_name.setObjectName("entityName")
         self.lbl_name.setWordWrap(True)
+        self.lbl_name.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         lay.addWidget(self.lbl_name)
 
         self.lbl_points = QLabel("—")

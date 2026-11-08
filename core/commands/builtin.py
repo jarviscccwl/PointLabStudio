@@ -13,11 +13,6 @@ from core.geometry.ops import subsample_indices
 from core.model.entities import CloudEntity, ScalarField
 
 
-def _subset_fields(entity: CloudEntity, index) -> dict:
-    return {name: ScalarField(name, f.data[index], kind=f.kind)
-            for name, f in entity.fields.items()}
-
-
 def _make_result(source: CloudEntity, xyz, fields: dict, info: str) -> CloudEntity:
     result = CloudEntity(name=source.name, path=None, xyz=xyz, fields=fields)
     result.color_mode = source.color_mode
@@ -31,11 +26,6 @@ def _make_result(source: CloudEntity, xyz, fields: dict, info: str) -> CloudEnti
         result.tier = source.tier
         result.info += f"；基于 {source.loaded:.0%} 预览"
     return result
-
-
-def _report(progress, value):
-    if progress is not None:
-        progress(float(np.clip(value, 0.0, 1.0)))
 
 
 def _apply_voxel(entity, params, progress, cancel):
@@ -57,9 +47,9 @@ def _apply_random(entity, params, progress, cancel):
     count = int(params["count"])
     idx = subsample_indices(entity.point_count, count)
     if idx is None:
-        return _make_result(entity, entity.xyz, _subset_fields(entity, slice(None)),
+        return _make_result(entity, entity.xyz, entity.subset_fields(slice(None)),
                             f"随机采样保持全部 {entity.point_count:,} 点")
-    return _make_result(entity, entity.xyz[idx], _subset_fields(entity, idx),
+    return _make_result(entity, entity.xyz[idx], entity.subset_fields(idx),
                         f"随机 {len(idx):,} 点")
 
 
@@ -90,7 +80,7 @@ def _masked(entity, keep, info):
     keep_count = int(keep.sum())
     if keep_count <= 0:
         raise ValueError(f"{info}：没有保留任何点，请检查参数")
-    return _make_result(entity, entity.xyz[keep], _subset_fields(entity, keep),
+    return _make_result(entity, entity.xyz[keep], entity.subset_fields(keep),
                         f"{info}（{keep_count:,} 点）")
 
 
@@ -98,7 +88,8 @@ def _apply_plane(entity, params, progress, cancel):
     (normal, d), keep = segmentation.plane_ransac(
         entity.xyz, distance=float(params["dist"]),
         max_iterations=int(params["iters"]), progress=progress, cancel=cancel)
-    info = f"平面 n=({normal[0]:.2f},{normal[1]:.2f},{normal[2]:.2f}) d={d:.2f}"
+    info = (f"平面 n=({normal[0]:.3f},{normal[1]:.3f},{normal[2]:.3f}) d={d:.3f}｜"
+            f"{normal[0]:.4f}x + {normal[1]:.4f}y + {normal[2]:.4f}z + {d:.4f} = 0")
     return _masked(entity, keep, info)
 
 
@@ -106,7 +97,7 @@ def _apply_ground(entity, params, progress, cancel):
     (normal, d), keep = segmentation.extract_ground(
         entity.xyz, distance=float(params["dist"]),
         max_iterations=int(params["iters"]), progress=progress, cancel=cancel)
-    info = f"地面 z≈{-d / normal[2]:.2f}"
+    info = f"地面 z≈{-d / normal[2]:.3f}｜n=({normal[0]:.3f},{normal[1]:.3f},{normal[2]:.3f})"
     return _masked(entity, keep, info)
 
 
@@ -115,12 +106,15 @@ def _apply_dbscan(entity, params, progress, cancel):
     labels = segmentation.dbscan(
         entity.xyz, eps=eps, min_samples=int(params["min_pts"]),
         progress=progress, cancel=cancel)
-    clusters = int(labels[labels >= 0].max()) if (labels >= 0).any() else 0
+    clusters = int(labels.max()) + 1 if (labels >= 0).any() else 0
     if clusters == 0:
         raise ValueError("DBSCAN：没有找到簇，请增大邻域半径或降低最少点数")
-    fields = _subset_fields(entity, slice(None))
+    noise = int((labels < 0).sum())
+    fields = entity.subset_fields(slice(None))
     fields["labels"] = ScalarField("labels", labels.astype(np.float32))
-    result = _make_result(entity, entity.xyz, fields, f"DBSCAN eps={eps:g}｜{clusters} 簇")
+    result = _make_result(entity, entity.xyz, fields,
+                          f"DBSCAN eps={eps:g} min={int(params['min_pts'])}｜"
+                          f"{clusters} 簇，噪声 {noise:,} 点")
     result.color_mode = "label"
     return result
 

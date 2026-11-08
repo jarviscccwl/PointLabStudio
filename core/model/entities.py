@@ -43,8 +43,21 @@ class ScalarField:
         return int(self.data.shape[0])
 
 
+class _BoundsMixin:
+    """点云与网格共用的包围盒中心计算。"""
+
+    def bounds(self) -> Optional[tuple]:
+        raise NotImplementedError
+
+    def center(self) -> np.ndarray:
+        b = self.bounds()
+        if b is None:
+            return np.zeros(3)
+        return (b[0] + b[1]) / 2.0
+
+
 @dataclass(eq=False)
-class CloudEntity:
+class CloudEntity(_BoundsMixin):
     """一片点云（现有 CloudData 的升级版）。"""
 
     name: str
@@ -84,12 +97,6 @@ class CloudEntity:
             np.asarray(self.xyz.max(axis=0), dtype=np.float64),
         )
 
-    def center(self) -> np.ndarray:
-        b = self.bounds()
-        if b is None:
-            return np.zeros(3)
-        return (b[0] + b[1]) / 2.0
-
     def extent(self) -> float:
         b = self.bounds()
         if b is None:
@@ -107,6 +114,11 @@ class CloudEntity:
         f = self.fields.get(name)
         return None if f is None else f.data
 
+    def subset_fields(self, index) -> dict:
+        """按索引裁切全部命名标量场，返回新的 fields 字典。"""
+        return {name: ScalarField(name, f.data[index], f.kind)
+                for name, f in self.fields.items()}
+
     # ---------- 状态复制（保持显示状态、替换数据） ----------
     def copy_display_from(self, other: "CloudEntity") -> None:
         self.color_mode = other.color_mode
@@ -116,7 +128,7 @@ class CloudEntity:
 
 
 @dataclass(eq=False)
-class MeshEntity:
+class MeshEntity(_BoundsMixin):
     """三角网格实体（Poisson 重建结果等），可与点云一起渲染并作为 C2M 参照。"""
 
     name: str
@@ -143,9 +155,3 @@ class MeshEntity:
             np.asarray(self.vertices.min(axis=0), dtype=np.float64),
             np.asarray(self.vertices.max(axis=0), dtype=np.float64),
         )
-
-    def center(self) -> np.ndarray:
-        b = self.bounds()
-        if b is None:
-            return np.zeros(3)
-        return (b[0] + b[1]) / 2.0

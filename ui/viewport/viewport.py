@@ -108,8 +108,8 @@ class PointCloudViewport(RenderCanvas):
     clip_drag_finished = Signal()
     clip_statistics_changed = Signal(object)
 
-    def __init__(self, theme: str = "dark"):
-        super().__init__(max_fps=120)
+    def __init__(self, theme: str = "dark", parent=None):
+        super().__init__(parent=parent, max_fps=120)
         self.setFocusPolicy(Qt.StrongFocus)
 
         self.theme = theme
@@ -859,7 +859,8 @@ class PointCloudViewport(RenderCanvas):
             speed *= 0.25  # 按住 Shift 精调
         self._yaw = float((self._yaw - float(dx) * speed + np.pi) % (2.0 * np.pi) - np.pi)
         if not self._fixed_view:
-            self._pitch = float((self._pitch - float(dy) * speed + np.pi)
+            # 抓取式转盘：向下拖动应让场景顶面转入视野（相机抬高、pitch 增大）
+            self._pitch = float((self._pitch + float(dy) * speed + np.pi)
                                 % (2.0 * np.pi) - np.pi)
         self._apply_camera()
         if self._fixed_view:
@@ -945,15 +946,6 @@ class PointCloudViewport(RenderCanvas):
         if not self._zoom_animating and self._zoom_lod_pending:
             self._zoom_lod_pending = False
             self._update_lod()
-
-    def _settle_zoom(self):
-        """立即结束缩放动画（重置视图/测试用）。"""
-        if self._zoom_animating:
-            self._distance = self._zoom_target
-            self._zoom_animating = False
-            self._zoom_velocity = 0.0
-            self._zoom_lod_pending = False
-            self._apply_camera()
 
     def _sync_zoom(self):
         """相机距离被直接改写后，让缩放动画从当前值重新开始。"""
@@ -1229,11 +1221,6 @@ class PointCloudViewport(RenderCanvas):
         self._proj_cache[cache_key] = (key, sx, sy, depth, ok)
         return sx, sy, depth, ok
 
-    def _screen_coords(self, xyz):
-        """世界坐标 → 屏幕像素坐标（分块投影，返回 sx, sy, 有效性）。"""
-        sx, sy, _depth, ok = self._project_points(xyz)
-        return sx, sy, ok
-
     def _pick_point(self, x, y, radius=18.0):
         """拾取点击半径内最靠前的可见点（2px 邻域深度测试，近似遮挡）。"""
         r2 = radius * radius
@@ -1310,11 +1297,6 @@ class PointCloudViewport(RenderCanvas):
 
     def clear_measurement(self):
         self._clear_measurement()
-
-    def _draw_measurement(self, p1, p2):
-        """兼容旧接口：两点测距（也用于 UI 回归测试）。"""
-        self._measure_pts = [np.asarray(p1, dtype=np.float32), np.asarray(p2, dtype=np.float32)]
-        self._draw_measurement_polyline()
 
     def _draw_measurement_polyline(self):
         self._needs_draw = True
@@ -1519,6 +1501,8 @@ class PointCloudViewport(RenderCanvas):
             mode, lx, ly = self._drag
             dx, dy = x - lx, y - ly
             self._drag = (mode, x, y)
+            if event.modifiers() & Qt.AltModifier:
+                dx, dy = dx * 0.2, dy * 0.2
             if mode == "orbit":
                 self.orbit_camera(dx, dy)
             else:
@@ -1577,6 +1561,8 @@ class PointCloudViewport(RenderCanvas):
             return
         pixels = event.pixelDelta().y()
         notches = pixels / 50.0 if pixels else event.angleDelta().y() / 120.0
+        if event.modifiers() & Qt.AltModifier:
+            notches *= 0.2
         self.zoom_camera(notches)
         event.accept()
 

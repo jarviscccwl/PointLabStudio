@@ -1,100 +1,135 @@
-# PointLab Studio v1.1.0
+# PointLab Studio
 
-基于 PySide6、pygfx/wgpu 和 Open3D 的 Windows 点云工作站，支持点云浏览、裁剪、测量、滤波、配准、网格重建与工程保存。提供深色和浅色主题。
+**v1.3.0** · 点云浏览、处理与分析工具
 
-## 直接运行 EXE
+支持逐帧浏览、多图层叠加、双窗格对比、裁剪、测量、滤波、配准和网格重建，提供深色与浅色主题。基于 PySide6、pygfx/wgpu 和 Open3D。
 
-从 GitHub Releases 下载 `PointLabStudio-v1.1.0-Windows-x64.exe`，双击运行，无需安装 Python。可直接将这个 EXE 发给其他人。
+## 快速启动
 
-支持 Windows 10/11 64 位，需要支持 Vulkan 或 DirectX 12 的显卡及驱动。单文件启动时会自动选择可写目录并解压内置运行库，请稍候；正常退出后清理临时运行文件。EXE 已包含 LAZ/E57 读取依赖。
+发布包位于 `dist/`，无需安装 Python：
 
-## 从 Git 安装
+| 系统 | 文件 | 使用方式 |
+| --- | --- | --- |
+| Windows 10/11 x64 | `PointLabStudio-v1.3.0-Windows-x64.exe` | 双击运行 |
+| Ubuntu 24.04 x86_64 | `PointLabStudio-v1.3.0-Ubuntu-x86_64.tar.gz` | 解压后运行 `PointLabStudio` |
+| Ubuntu 24.04 ARM64 | `PointLabStudio-v1.3.0-Ubuntu-arm64.tar.gz` | 解压后运行 `PointLabStudio` |
 
-环境要求：Windows 10/11 64 位、Git、Python 3.12 64 位，以及支持 Vulkan 或 DirectX 12 的显卡和驱动。
+Ubuntu 包中的 `_internal` 是运行依赖，请与程序放在一起。Windows 已验证启动；Ubuntu 两种架构已检查启动入口和窗口依赖，尚未验证真实桌面与显卡。macOS Apple Silicon 暂无成品，已提供构建脚本。
 
-在 PowerShell 中执行：
+需要可用的图形驱动；Windows 显卡需支持 Vulkan 或 DirectX 12。启动时会解压运行库，等待进度条完成即可。
+
+## 开始使用
+
+1. **打开点云**：拖入文件或文件夹，也可按 `Ctrl+O`。新打开的图层位于列表上方。
+2. **调整视角**：左键旋转，右键或中键平移，滚轮缩放，双击设置旋转中心。按住 `Alt` 可慢速微调。
+3. **逐帧查看**：文件夹按文件名自然排序，用方向键切帧。手动勾选其他点云可叠加显示；「双窗格」用于对比相邻帧。
+4. **处理与导出**：在「处理」菜单选择操作，使用 `Ctrl+E` 导出当前点云。支持撤销、重做和任务取消。
+
+### 工作区与导出有什么区别？
+
+**只是查看点云，不需要创建或保存工作区。** 工作区用于下次继续当前的整理和处理。
+
+| 目的 | 操作 | 保存内容 |
+| --- | --- | --- |
+| 下次继续工作 | `Ctrl+S` 保存工作区 | `.pls` 文件，以及需要时生成的同名 `.assets` 目录 |
+| 在其他软件使用点云 | `Ctrl+E` 导出点云 | PLY、PCD、LAS 等点云文件 |
+
+`.pls` 记录源文件路径、分组、视角和显示状态，处理结果保存在 `.assets` 中。分享或移动工作区时，需一起带上源点云、`.pls` 和已有的 `.assets`，保持相对位置。旧版 `.pls` 仍可打开。
+
+普通浏览可直接关闭；有处理结果或已保存工作区的改动时，会提示保存。保存工作区不会覆盖源点云。「移出工作区」仅移除场景项目；重命名、移动原文件或「移到回收站」会改变磁盘文件。
+
+### 常用快捷键
+
+| 按键 | 功能 | 按键 | 功能 |
+| --- | --- | --- | --- |
+| `1` / `2` / `3` | 高度 / 强度 / RGB | `4` / `5` | 标签 / 标量场 |
+| `6` / `7` | 单色 / 自动 | `C` | 循环颜色 |
+| `←` / `↑` | 上一帧 | `→` / `↓` | 下一帧 |
+| `R` | 重置视角 | `+` / `−` | 调整点大小 |
+| `B` | 开关裁剪 | `Space` | 显示或隐藏选中点云 |
+| `Ctrl+Z` / `Ctrl+Y` | 撤销 / 重做 | `H` | 查看全部快捷键 |
+| `Alt` + 拖动或滚轮 | 以 20% 速度微调 | `Esc` | 退出工具或取消拖动 |
+
+数字颜色键在视口或场景列表获得焦点时生效，不影响输入框。
+
+## 文件格式与使用限制
+
+- **读取**：BIN、PLY、PCD、XYZ/XYZN/XYZRGB、PTS、LAS/LAZ、E57、NPY/NPZ、TXT/CSV。
+- **导出**：PLY、PCD、LAS、PTS、XYZ；需要保留更多字段时优先使用 PLY/PCD。
+- **雷达包**：「打开 → 导入雷达包」支持 RoboSense EM4 的非压缩 pcap/pcapng（UDP 6699）和包含 `sensor_msgs/PointCloud2` 的 mcap，结果保存为逐帧 `.npy`。双回波数据取首回波。
+- **采样预览**：大文件可能只加载部分点；此时处理和导出也只包含已加载点，请留意界面提示。
+- **裁剪**：视口裁剪只改变显示。保存框内点请用「工作区 → 导出裁剪内点云」；生成新图层请用「处理 → 盒裁切」。
+- **单位与属性**：坐标按米显示，不自动换算。体素降采样保留颜色和强度均值，其他属性不参与聚合；DBSCAN 超过 15 万点时采用抽样与标签传播。
+- **LAS**：导出为 LAS 1.2，采用毫米精度，分类值限 0–31。LAZ/E57 仅支持读取。
+- **回收站**：系统回收站不可用时会保留未处理文件，不改为永久删除；真实移入与撤销恢复尚需手动验证。
+
+## 从源码运行
+
+使用 Python 3.12。在项目根目录的 PowerShell 中执行：
 
 ```powershell
-git clone https://github.com/jarviscccwl/PointLabStudio.git
-cd PointLabStudio
 py -3.12 -m venv .venv
-.venv\Scripts\python.exe -m pip install --upgrade pip
 .venv\Scripts\python.exe -m pip install -r requirements.txt
 .\start.bat
 ```
 
-之后双击 `start.bat` 即可启动，无需手动激活虚拟环境。也可直接打开文件或目录：
+之后双击 `start.bat` 即可。源码读取 LAZ/E57 需额外安装 `laspy lazrs pye57`，发布包已包含这些依赖。
 
 ```powershell
+# 直接打开文件或目录
 .venv\Scripts\python.exe run.py "D:\点云目录"
+# 查看批处理命令行帮助
+.venv\Scripts\python.exe -m apps.cli --help
 ```
 
-更新项目时，在项目目录执行 `git pull`，再运行上述依赖安装命令。获取固定版本可在克隆后执行 `git checkout v1.1.0`。
+## 构建发布包
 
-## 使用
+成品输出到 `dist/`，`build/` 仅存放中间文件。版本由 `core/__init__.py` 定义。
 
-- **逐帧浏览**：拖入文件夹后按文件名自然排序，默认显示第一帧。点击列表、按方向键或中央上方 ‹ / › 切换，上一帧自动隐藏。文件按需后台加载，并预取相邻帧。
-- **叠加显示**：手动勾选其他点云后，切帧时仍保留显示；取消勾选即可隐藏。要保留当前帧，可右键「固定叠加显示」。双击聚焦，右键可移除或重新加载。
-- **双窗格**：点击中央上方「双窗格」，左侧当前帧、右侧上一帧或下一帧。默认视角联动，可取消后分别旋转、平移和缩放。处理、选点与裁剪作用于左侧，右侧用于参考。
-- **视角**：自由视角下，左键旋转、右键/中键平移、滚轮缩放、双击设置旋转中心。固定视角锁定当前 Z 高度，拖动水平转向，滚轮沿当前朝向在 XY 平面平滑移动。
-- **裁剪**：点击裁剪按钮，选择「按包围盒」，关闭面板后拖动橙色手柄。松开更新点数与范围，Esc 取消拖动。正对视线的轴需先旋转视图。
-- **保存框内点**：「工程 → 导出裁剪内点云」。裁剪只改变显示；「导出当前点云」仍导出完整数据。要生成可继续处理的新点云，使用「处理 → 盒裁切」，默认沿用当前裁剪框。
-- **测量与选择**：测量工具连续加点；选点查看属性；框选后在「处理」中提取或删除。测量可导出 CSV，Esc 退出工具。
-- **处理**：当前帧加载完成后使用「处理」菜单。自动显示新结果、隐藏未固定的原数据，支持撤销/重做。配准或距离分析所选的参考帧若未加载，会先后台读取。底部可取消任务；部分原生算法需等待当前计算阶段结束。
-- **网格**：Poisson 重建后，在「工程 → 网格结果」中显示/隐藏、移除或导出 PLY。网格随工程保存。
-- **工程**：保存 `.pls` 和同名 `.assets` 文件夹；移动工程时二者一起移动，并保留源点云。打开工程会将数据加入当前场景。
-
-| 快捷键 | 操作 | 快捷键 | 操作 |
-| --- | --- | --- | --- |
-| Ctrl+O | 打开文件 | Ctrl+S | 保存工程 |
-| Ctrl+E | 导出当前点云 | Ctrl+Z / Ctrl+Y | 撤销 / 重做 |
-| R | 重置视角 | B | 开关裁剪 |
-| C | 循环颜色 | + / − | 点大小 |
-| ← / ↑ | 上一帧 | → / ↓ | 下一帧 |
-| Space | 显示/隐藏选中点云 | H | 完整快捷键 |
-
-## 格式与限制
-
-- 读取：BIN、PLY、PCD、XYZ/XYZN/XYZRGB、PTS、LAS、NPY/NPZ、TXT/CSV。
-- 导出：PLY、PCD、LAS、PTS、XYZ；字段保真优先选 PLY/PCD。
-- LAZ/E57 读取需额外安装：`.venv\Scripts\python.exe -m pip install laspy lazrs pye57`。
-- 大文件可能先显示采样预览；预览上执行的处理和导出仅包含已加载点，界面会标注。
-- 最近源帧缓存以 8 帧、512 MB 为回收预算；当前帧、相邻帧和手动叠加项优先保留，派生结果不自动回收。状态栏点数表示已加载的数据。
-- 坐标按米显示，不自动识别或转换原始数据单位。颜色条与直方图基于原始点云。
-- 体素降采样保留颜色/强度均值，其他属性不参与聚合；随机采样保留逐点属性。DBSCAN 超过 15 万点时抽样聚类，再用最近邻传播标签。
-- LAS 导出采用 1.2 格式、毫米精度，分类值限 0–31；更丰富的标签使用 PLY/PCD。LAZ/E57 当前只支持读取。
-
-## 目录与常见问题
-
-`apps/` 应用入口 · `core/` 数据与算法 · `ui/` 界面 · `resources/` 图标 · `packaging/` EXE 构建配置。`.venv/` 和 `dist/` 不上传 Git 仓库，EXE 作为 GitHub Release 附件发布。
-
-设置、日志和渲染缓存默认位于 `%APPDATA%\PointLabStudio\`；可用 `POINTLAB_HOME` 指定其他位置。EXE 遇到用户数据目录不可写时，会自动回退到 EXE 旁的 `.PointLabStudio/`，保留该文件夹即可保留设置。
-操作失败请展开底部「日志」；启动失败查看该目录下的 `logs/pointlab.log`。若提示缺少依赖，重新执行安装命令；若渲染不可用，检查显卡驱动。
-
-EXE 会自动避开不可写的 `%TEMP%` / `%TMP%`。如果所有候选目录均不可写，请将 EXE 移到自己有写入权限的文件夹后再打开，无需修改系统权限。
-
-命令行：`.venv\Scripts\python.exe -m apps.cli --help`。
-
-## 构建 EXE
-
-在 Windows 64 位、Python 3.12 环境中执行：
+**Windows x64**：在上述源码环境中执行：
 
 ```powershell
 .venv\Scripts\python.exe -m pip install -r requirements-build.txt
 powershell -ExecutionPolicy Bypass -File packaging/build.ps1
 ```
 
-生成 `dist/PointLabStudio-v1.1.0-Windows-x64.exe`。构建脚本先用 PyInstaller 打包应用，再用 Windows 自带的 .NET Framework 编译目录回退启动器；不需要另外分发源码或依赖目录。不要直接分发 `build/` 中的中间产物。
+**Ubuntu / macOS Apple Silicon**：在对应系统、架构的 Python 3.12 虚拟环境中执行：
+
+```bash
+python -m pip install -r requirements-build.txt
+python packaging/build-native.py
+```
+
+Ubuntu 系统依赖见 [Dockerfile.linux](packaging/Dockerfile.linux)。macOS 构建需要 Apple Silicon Mac，生成 `.dmg`，脚本未配置签名或公证。
+
+Windows 也可用 Docker Desktop 的 Linux 容器在本地构建 Ubuntu 包。以下命令生成 x86_64 包；将两处 `linux/amd64` 换为 `linux/arm64`、两处标签后缀 `amd64` 换为 `arm64` 即可构建 ARM64 包：
+
+```powershell
+docker build --platform linux/amd64 -f packaging/Dockerfile.linux -t pointlab-build:v1.3.0-amd64 .
+docker run --rm --platform linux/amd64 --mount "type=bind,source=$($PWD.Path),target=/workspace" pointlab-build:v1.3.0-amd64
+```
+
+## 设置与排错
+
+- **日志**：界面底部「日志」显示操作错误；启动日志为配置目录下的 `logs/pointlab.log`。
+- **配置目录**：Windows 默认 `%APPDATA%\PointLabStudio\`，其他系统默认 `~/.pointlabstudio/`；可用 `POINTLAB_HOME` 指定。Windows EXE 在默认位置不可写时会尝试其他位置，包括 EXE 旁的 `.PointLabStudio/`。
+- **无法启动或渲染**：先查看日志，再检查目录写入权限和显卡驱动。源码环境缺依赖时，重新安装 `requirements.txt`。
+- **EXE 图标仍是旧样式**：关闭并重新打开文件夹；构建脚本会主动通知 Windows 刷新图标缓存。
+
+代码目录：`apps/` 入口、`core/` 数据与算法、`ui/` 界面、`resources/` 图标、`packaging/` 构建、`tests/` 测试。
 
 ## 更新记录
 
-### v1.1.0 · 2026-10-31
+### v1.3.0 · 2026-11-08
 
-- 新增按需逐帧加载、自动切换显示、相邻帧双窗格对比与视角联动。
-- 提升浅色主题的文字、控件、直方图、无着色点云与工具线条对比度。
-- 新增固定高度平滑行走、可拖动裁剪框及裁剪内点云导出。
-- 完善网格管理、工程恢复、跨盘保存、任务取消与安全关闭。
-- 优化侧栏排版，精简项目目录，文档统一到 README。
-- 修复粗配准衔接 ICP、抽样法线对应、任务取消及预览状态保存；降低法线与聚类的峰值内存。
-- 修复 LAS 范围/分类信息与 E57 多扫描位姿、颜色读取；提供 Windows 单文件 EXE。
-- 修复系统临时目录不可写时 EXE 无法启动的问题，自动选择可写目录并在退出后清理。
+- 新图层置顶，新增 `1–7` 颜色快捷键和 `Alt` 慢速视角操作。
+- 「工程」更名为「工作区」，明确保存与导出的区别，普通浏览无需保存确认。
+- 新增单条百分比启动页，统一字体和配色，修复 `QRenderWidget` 短暂弹窗。
+- 恢复原版蓝色图标，完善多尺寸图标与 Windows 图标缓存刷新。
+- 提供 Windows x64、Ubuntu x86_64 / ARM64 包及 macOS Apple Silicon 构建脚本。
+
+| 历史版本 | 主要变化 |
+| --- | --- |
+| v1.2.0 · 2026-11-07 | 雷达包导入、自由视角修正、重复代码清理（源码验证版） |
+| v1.1.1 · 2026-11-07 | 文件夹树、批量文件管理、工作区保存与恢复（源码验证版） |
+| v1.1.0 · 2026-10-31 | 逐帧浏览、双窗格、裁剪导出、网格管理和 Windows 单文件 EXE |

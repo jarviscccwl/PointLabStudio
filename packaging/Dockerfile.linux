@@ -1,0 +1,20 @@
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-venv python3-dev build-essential binutils patchelf \
+    libgl1 libegl1 libxkbcommon0 libxcb-cursor0 libvulkan1 libgomp1 libxerces-c-dev \
+    ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN python3 -m venv /opt/pointlab
+ENV PATH="/opt/pointlab/bin:$PATH"
+COPY requirements.txt requirements-build.txt /opt/requirements/
+RUN pip install --no-cache-dir -r /opt/requirements/requirements-build.txt
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libglib2.0-0t64 libdbus-1-3 libfontconfig1 libfreetype6 libxkbcommon-x11-0 \
+    libxcb-icccm4 libxcb-keysyms1 libxcb-shape0 libxcb-xkb1 libusb-1.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends libgfortran5 libsm6 libice6 \
+    && rm -rf /var/lib/apt/lists/*
+RUN python -c "from PySide6.QtWidgets import QApplication; import open3d, pye57"
+WORKDIR /workspace
+CMD ["python", "packaging/build-native.py"]

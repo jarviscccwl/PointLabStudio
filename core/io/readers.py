@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import Callable, Optional, Tuple
+from typing import Optional, Tuple
 
 import numpy as np
 
@@ -25,8 +25,7 @@ from core.color.colormaps import array_to_rgb
 from core.geometry.ops import sanitize_cloud
 from core.io.bin_reader import infer_bin_dim, parse_bin_dim
 from core.model.entities import CloudEntity, ScalarField, TIER_L, TIER_M, TIER_S
-
-ProgressCb = Callable[[float], None]
+from core.progress import ProgressCb
 
 # lcm(3,4,5,6,7,8)：探测块长度取该倍数，保证任意候选维度都能整除
 _LCM = 840

@@ -39,9 +39,6 @@ def main(argv=None):
     from PySide6.QtGui import QIcon
     from pathlib import Path
 
-    from ui.main_window import MainWindow
-    from ui.theme import build_stylesheet
-
     app = QApplication(sys.argv[:1] if argv is not None else sys.argv)
     app.setApplicationName("PointLabStudio")
     from core import __version__
@@ -49,10 +46,23 @@ def main(argv=None):
     app.setWindowIcon(QIcon(str(Path(__file__).resolve().parents[1] / "resources" / "app.svg")))
     app.setOrganizationName("PointLabStudio")
     app.setStyle("Fusion")
-    app.setStyleSheet(build_stylesheet(theme))
+    from ui.startup import StartupScreen
 
-    window = MainWindow(start_path=args.path, theme=theme)
-    window.show()
+    splash = StartupScreen(theme)
+    try:
+        from ui.main_window import MainWindow
+
+        splash.set_progress(45)
+        window = MainWindow(theme=theme)
+        splash.set_progress(90)
+        window.show()
+        splash.set_progress(100)
+        splash.finish(window)
+    finally:
+        splash.close()
+    if args.path:
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(0, lambda: window.open_paths([args.path]))
     code = app.exec()
     from core.recovery import clear_running
     clear_running()

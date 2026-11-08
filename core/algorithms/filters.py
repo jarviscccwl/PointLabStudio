@@ -6,18 +6,12 @@
 
 from __future__ import annotations
 
-from typing import Callable, Optional, Tuple
+from typing import Optional, Tuple
 
 import numpy as np
 
 from core.cancellation import CancelCb, check_cancel
-
-ProgressCb = Optional[Callable[[float], None]]
-
-
-def _report(progress: ProgressCb, value: float):
-    if progress is not None:
-        progress(float(np.clip(value, 0.0, 1.0)))
+from core.progress import ProgressCb, report_progress as _report
 
 
 def voxel_downsample(xyz: np.ndarray, colors: Optional[np.ndarray] = None,

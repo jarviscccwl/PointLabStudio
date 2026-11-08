@@ -12,13 +12,10 @@ import argparse
 import os
 import sys
 
-import numpy as np
-
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from core.color.colormaps import compute_colors
 from core.io.readers import ReadOptions, read_cloud
 from core.io.scanner import collect_files
 from core.commands import Command, commands_from_json, commands_to_json, get_spec, specs

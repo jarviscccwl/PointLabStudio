@@ -275,6 +275,8 @@ QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
 QSplitter::handle { background: ${border}; }
 QSplitter::handle:horizontal { width: 1px; }
 QSplitter::handle:vertical { height: 1px; }
+QSplitter#workspacePanes::handle { background: transparent; }
+QSplitter#workspacePanes::handle:hover { background: ${border_strong}; }
 
 /* ---------- 选项卡 ---------- */
 QTabWidget::pane {
@@ -335,8 +337,27 @@ QComboBox#headerCombo {
 QComboBox#headerCombo:hover { border-color: ${border_strong}; }
 QComboBox#headerCombo:focus { border-color: ${accent}; }
 
-/* ---------- 场景面板（卡片列表） ---------- */
+/* ---------- 场景面板 ---------- */
 QWidget#scenePanel { background: ${panel}; border: 1px solid ${border}; border-radius: ${card}px; }
+QTreeWidget#sceneList { background: transparent; border: none; outline: none; }
+QTreeWidget#sceneList::item { padding: 2px 3px; border: none; }
+QTreeWidget#sceneList::item:hover { background: ${panel2}; }
+QTreeWidget#sceneList::item:selected { background: ${selection}; color: ${text}; }
+QTreeWidget#sceneList::branch { background: ${panel}; border-image: none; image: none; }
+QTreeWidget#sceneList::branch:selected { background: ${panel}; }
+QTreeWidget#sceneList::branch:has-children:closed { image: url(${chevron_right_icon}); }
+QTreeWidget#sceneList::branch:has-children:open { image: url(${chevron_icon}); }
+QTreeWidget#sceneList::indicator {
+    width: 14px; height: 14px; border: 1px solid ${border_strong};
+    border-radius: 3px; background: ${panel2};
+}
+QTreeWidget#sceneList::indicator:checked {
+    background: ${accent}; border-color: ${accent}; image: url(${check_icon});
+}
+QTreeWidget#sceneList QHeaderView::section {
+    background: ${panel}; color: ${text2}; padding: 5px 3px;
+    border: none; border-bottom: 1px solid ${border}; font-size: 11px;
+}
 QLabel#sectionTitle { font-size: 12px; font-weight: 600; color: ${text2}; letter-spacing: 0.2px; }
 QLabel#dim { color: ${text3}; font-size: 11px; }
 QListWidget#sceneList { background: transparent; border: none; padding: 0; }
@@ -459,6 +480,8 @@ def build_stylesheet(theme_name: str = "dark") -> str:
         check_icon=_CHECK_ICON,
         chevron_icon=(_CHEVRON_ICON.replace("chevron-down.svg", "chevron-down-light.svg")
                       if theme_name == "light" else _CHEVRON_ICON),
+        chevron_right_icon=_CHEVRON_ICON.replace("chevron-down.svg",
+                            "chevron-right-light.svg" if theme_name == "light" else "chevron-right.svg"),
         **t,
     )
     if theme_name == "light":
