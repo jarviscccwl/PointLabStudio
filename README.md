@@ -1,26 +1,68 @@
+<div align="center">
+
+<img src="resources/app.svg" width="56" height="56" alt="PointLab Studio 图标">
+
 # PointLab Studio
 
-**v2.0.0 · 本地 Windows 版** · 点云、图像与传感器采集包浏览、处理与分析工具
+**从采集包浏览，到传感器融合、三维框选与点云提取。**
 
-支持逐帧浏览、多图层叠加、双窗格对比、裁剪、测量、滤波、配准和网格重建，提供深色与浅色主题。基于 PySide6、pygfx/wgpu 和 Open3D。
+`v2.0.0` · `Windows x64` · `Python 3.12` · `PySide6 / pygfx / Open3D`
 
-最新 Windows 成品为 **`dist/PointLabStudio-v2.0.0-Windows-x64.exe`**，已包含融合显示、双窗格颜色修复、三维框联动、框内点云提取及性能改进；源码可用 **`start.bat`** 运行。旧版 v1.3.0 EXE 已从本地 `dist` 删除。源码发布分支为 [`preview`](https://github.com/jarviscccwl/PointLabStudio/tree/preview)，由原 `feature/recording-browser` 改名，保留提交历史。GitHub 仅保存源码、资源、测试与说明，EXE 留在本地。成品校验值和验收结果见 [v2.0.0 preview 交付记录](docs/release-v2.0.0-preview-2026-11-09.md)。
+[快速启动](#快速启动) · [功能概览](#功能概览) · [使用指南](#开始使用) · [源码运行](#从源码运行) · [更新记录](#更新记录)
 
-**本次新增：当前帧及关联多帧的 3D 框内点云提取，启动与框编辑性能优化。** 已包含在本地最新 EXE 和 `preview` 源码中。使用方式和实测结果见 [框内提取与性能记录](docs/box-extraction-performance-2026-11-09.md)。
+<img src="resources/startup-art.png" width="960" alt="深蓝背景中的青色点云汽车与三维包围框，PointLab Studio 启动页视觉">
+
+<sub>应用启动页视觉素材 · 非数据处理结果截图</sub>
+
+</div>
+
+PointLab Studio 是面向点云、图像与传感器采集包的桌面工作台。将文件或采集目录拖入窗口，即可逐帧浏览、同步对照、调整三维框并导出结果；支持深浅主题、工作区保存与撤销重做。
+
+## 功能概览
+
+| | 能力 | v2.0.0 工作流 |
+| --- | --- | --- |
+| 🗂️ | 多源浏览 | PCAP、MCAP、ROS BAG、普通点云、图像与文本表格，统一概览和索引 |
+| ⏱️ | 双窗格同步 | 同组点云与图像自动配对，支持两类时钟、容差和时间偏移 |
+| 🎨 | 标定与融合 | 点云投影到图像、图像为点云赋色、三维框投影联动 |
+| 📦 | 3D 框选 | 嵌入式俯视／前视／侧视编辑，三轴姿态、精细调整和局部撤销 |
+| 🔗 | 相邻帧关联 | 局部几何关联、人工锚点修正、有框帧导航和标注 JSON 导出 |
+| ✂️ | 点云提取 | 当前框内点加入场景；多帧批量导出 PCD 与来源、时间戳清单 |
+| 🛠️ | 点云处理 | 多图层、裁剪、测量、滤波、配准、网格重建和格式导出 |
+
+**v2.0.0 重点**：融合显示、统一三视图框编辑、当前帧及多帧框内提取，以及启动和交互性能优化。具体测量条件与结果见 [性能记录](docs/box-extraction-performance-2026-11-09.md)。
 
 ## 快速启动
 
-发行版无需安装 Python。本次成品为 Windows v2.0.0；下表 Ubuntu 文件为此前的 v1.3.0 发行包，不包含本轮改进：
+### Windows 成品
 
-| 系统 | 文件 | 使用方式 |
-| --- | --- | --- |
-| Windows 10/11 x64 | `PointLabStudio-v2.0.0-Windows-x64.exe` | 双击运行 |
-| Ubuntu 24.04 x86_64 | `PointLabStudio-v1.3.0-Ubuntu-x86_64.tar.gz` | 解压后运行 `PointLabStudio` |
-| Ubuntu 24.04 ARM64 | `PointLabStudio-v1.3.0-Ubuntu-arm64.tar.gz` | 解压后运行 `PointLabStudio` |
+已有安装包时，双击 **`PointLabStudio-v2.0.0-Windows-x64.exe`** 即可运行，无需安装 Python。支持 Windows 10/11 x64；显卡需支持 Vulkan 或 DirectX 12。启动时自动解压运行库，关闭后清理临时运行目录。
 
-Ubuntu 包中的 `_internal` 是运行依赖，请与程序放在一起。Windows 已验证启动；Ubuntu 两种架构已检查启动入口和窗口依赖，尚未验证真实桌面与显卡。macOS Apple Silicon 暂无成品，已提供构建脚本。
+**仓库提供源码，EXE 不包含在 Git 仓库或源码 ZIP 中。** 本次已验证成品位于本地 `dist/`，尚未上传为 GitHub Release 附件。没有 EXE 时，请按下方[源码运行](#从源码运行)步骤启动。
 
-需要可用的图形驱动；Windows 显卡需支持 Vulkan 或 DirectX 12。启动时会解压运行库，等待进度条完成即可。
+<details>
+<summary>Windows 成品校验与本次验证结果</summary>
+
+| 项目 | 结果 |
+| --- | --- |
+| 文件 | `PointLabStudio-v2.0.0-Windows-x64.exe` |
+| 大小 | 229,821,952 字节（约 219.18 MiB） |
+| 文件／产品版本 | `2.0.0` |
+| SHA-256 | `c15c0dfae7aec386d84ecdf36ac9d5c49928ebc54e7491812a5de3dc6f46498b` |
+| 源码回归 | 2026-11-09：unittest 发现 394 项，378 项通过、16 项跳过，无失败 |
+| EXE 验收 | 隔离工作目录和 PATH 启动，加载并渲染 1,000 点 PLY；正常退出，日志无错误，运行目录自动清理 |
+
+16 项跳过涉及系统回收站和 Windows 符号链接权限。本次 EXE 验收未重新覆盖大型采集包与全部交互；此前的构建及数据验证见 [交付记录](docs/release-v2.0.0-preview-2026-11-09.md)。
+
+```powershell
+Get-FileHash .\dist\PointLabStudio-v2.0.0-Windows-x64.exe -Algorithm SHA256
+```
+
+</details>
+
+### 源码与其他平台
+
+发布源码位于 [`main`](https://github.com/jarviscccwl/PointLabStudio/tree/main)，固定版本使用 [`v2.0.0`](https://github.com/jarviscccwl/PointLabStudio/tree/v2.0.0) 标签。Ubuntu x86_64 / ARM64 与 macOS Apple Silicon 提供[构建脚本](#构建发布包)，本次未交付或验证这些平台的 v2.0.0 成品。
 
 ## 开始使用
 
@@ -28,6 +70,9 @@ Ubuntu 包中的 `_internal` 是运行依赖，请与程序放在一起。Window
 2. **调整视角**：左键旋转，右键或中键平移，滚轮缩放，双击设置旋转中心。按住 `Alt` 可慢速微调。
 3. **逐帧查看**：文件夹按文件名自然排序，用方向键切帧。手动勾选其他点云可叠加显示；「双窗格」用于对比相邻帧。
 4. **处理与导出**：在「处理」菜单选择操作，使用 `Ctrl+E` 导出当前点云。支持撤销、重做和任务取消。
+
+<details>
+<summary><strong>🗂️ 采集包浏览、播放与时间同步</strong></summary>
 
 ### 采集包：先看内容，再选择浏览
 
@@ -41,9 +86,9 @@ Ubuntu 包中的 `_internal` 是运行依赖，请与程序放在一起。Window
 
 「同步查看」以左侧为主，在右侧寻找最接近的时间。默认使用记录/抓包时间；也可切换设备/消息头时间，设置匹配容差和右侧时间偏移。偏移加在右侧时间上，超过容差或缺少所选时钟会明确显示未匹配。两类时间以整数纳秒保存，不隐式修正时钟差；普通图片、文本没有时间戳时不会虚构时间。
 
-直接打开一组采集文件夹时，会自动选择同一组里的点云与图像，开启左点云、右图像的双窗格，并定位到当前容差内第一对匹配帧。例如 `D:\2026_10_14\selective_20261014_114507` 中的 PCAP 和 `bag\bag_0.mcap` 可以一起打开。多个相机优先选择有较多时间匹配的流，仍可手动切换；不同采集目录不会自动交叉配对。
+直接打开一组采集文件夹时，会自动选择同一组里的点云与图像，开启左点云、右图像的双窗格，并定位到当前容差内第一对匹配帧。多个相机优先选择有较多时间匹配的流，仍可手动切换；不同采集目录不会自动交叉配对。
 
-如果相机比雷达晚开始录制，开头部分点云仍然保留，回到这些帧会显示「未匹配」。本次 `114507` 数据默认从第 353 帧点云开始双窗格查看，两侧记录时间差为 +15.671 ms。重新读取、调整范围或恢复工作区时保留用户位置，不再次跳到首对匹配帧。不要为了消除「未匹配」而盲目增大容差或修改时间偏移。
+如果相机比雷达晚开始录制，开头部分点云仍然保留，回到这些帧会显示「未匹配」。重新读取、调整范围或恢复工作区时保留用户位置，不再次跳到首对匹配帧。应根据实际时钟关系设置容差与偏移。
 
 「时间定位」按当前数据流起点的相对秒数跳转；交换视图会定位到已匹配的对照帧，并反转偏移方向。未匹配时显示缺少哪一侧的时钟，或最近帧的时间差和当前容差。导出菜单可分别保存主视图、对照视图；文件名采用对应数据流的原始帧索引，并处理 Windows 文件名中的特殊字符。
 
@@ -52,6 +97,11 @@ Ubuntu 包中的 `_internal` 是运行依赖，请与程序放在一起。Window
 点云窗格上方的「颜色」可调整着色方式、色图、标量字段、点大小与固定范围；顶栏 `1–6` 颜色选择同样有效。设置对两侧点云生效，切帧、重载与保存重开后保持。图像上方「融合」直接打开标定与投影；「显示设置」把点云显示、融合、时间匹配分为三页，浏览区不常驻这些参数。
 
 如果帧号或图像变化、点云画面却停住，软件会尝试恢复绘制。持续异常会暂停并提示。可用「更多 → 重新加载当前话题 / 重新加载对照话题」，也可右键左侧话题选「重新加载此话题」。重载会暂停播放、重新读取这个话题并重建其点云显示，保留当前位置、视角、同步、标定与标注；其他话题缓存保留。它不替代源文件改变后的重新索引。
+
+</details>
+
+<details>
+<summary><strong>📦 3D 框选、相邻帧关联与点云提取</strong></summary>
 
 ### 3D 框选、关联前后帧与人工修正
 
@@ -86,6 +136,11 @@ Ubuntu 包中的 `_internal` 是运行依赖，请与程序放在一起。Window
 
 标注绑定原始帧号，缩小导入范围不会丢失范围外的框。数据盘暂时断开时，重新保存工作区仍保留来源和标注，接回后重新打开数据源即可继续；源文件或解析设置变化时会提示并使旧标注失效，避免套到错误帧上。
 
+</details>
+
+<details>
+<summary><strong>🎨 相机标定、投影与图像赋色</strong></summary>
+
 ### 相机参数与投影
 
 点击图像上方「融合」，或「显示设置 → 融合」。内外参就绪后可分别开启「点云 → 图像」「图像 → 点云赋色」「在图像中显示 3D 框」；需要时再开启图像去畸变。
@@ -116,6 +171,11 @@ T_camera_lidar:
 
 `T_camera_lidar` 将雷达点变换到相机光学坐标系（X 向右、Y 向下、Z 向前）；也支持反向的 `T_lidar_camera`。平移单位可选 `m`、`cm`、`mm`，点云按米解释。ROS `camera_matrix/data`、`distortion_coefficients/data` 写法同样可读。包内 K/D 用于原始图像；已经校正的图像应导入与其像素空间一致的内参、零畸变和对应光学坐标系外参，不会自动用 P/R 替换 K/D。
 
+</details>
+
+<details>
+<summary><strong>💾 文本、表格与工作区保存</strong></summary>
+
 ### 文本、表格与工作区
 
 TXT/LOG/CSV/TSV/JSON/YAML 可以直接查看；大文本和表格按页读取，提供「上一页/下一页」、本页搜索和表格排序。默认每页最多约 256 KiB、表格 1,000 行，CSV 引号内换行保持完整；超长单条记录会提示。文本按 UTF-8 读取，其他编码会提示可能的替换字符。
@@ -136,6 +196,8 @@ TXT/LOG/CSV/TSV/JSON/YAML 可以直接查看；大文本和表格按页读取，
 `.pls` 记录源文件路径、分组、视角和显示状态，处理结果保存在 `.assets` 中。分享或移动工作区时，需一起带上源点云、`.pls` 和已有的 `.assets`，保持相对位置。旧版 `.pls` 仍可打开。
 
 普通浏览可直接关闭；有目标标注、处理结果或已保存工作区的改动时，会提示保存。保存工作区不会覆盖源点云。「移出工作区」仅移除场景项目；重命名、移动原文件或「移到回收站」会改变磁盘文件。
+
+</details>
 
 ### 常用快捷键
 
@@ -170,9 +232,11 @@ TXT/LOG/CSV/TSV/JSON/YAML 可以直接查看；大文本和表格按页读取，
 
 ## 从源码运行
 
-使用 Python 3.12。在项目根目录的 PowerShell 中执行：
+推荐 Python 3.12。在 PowerShell 中获取固定版本并安装依赖：
 
 ```powershell
+git clone --branch v2.0.0 https://github.com/jarviscccwl/PointLabStudio.git
+cd PointLabStudio
 py -3.12 -m venv .venv
 .venv\Scripts\python.exe -m pip install -r requirements.txt
 .\start.bat
@@ -210,8 +274,8 @@ Ubuntu 系统依赖见 [Dockerfile.linux](packaging/Dockerfile.linux)。macOS �
 Windows 也可用 Docker Desktop 的 Linux 容器在本地构建 Ubuntu 包。以下命令生成 x86_64 包；将两处 `linux/amd64` 换为 `linux/arm64`、两处标签后缀 `amd64` 换为 `arm64` 即可构建 ARM64 包：
 
 ```powershell
-docker build --platform linux/amd64 -f packaging/Dockerfile.linux -t pointlab-build:v1.3.0-amd64 .
-docker run --rm --platform linux/amd64 --mount "type=bind,source=$($PWD.Path),target=/workspace" pointlab-build:v1.3.0-amd64
+docker build --platform linux/amd64 -f packaging/Dockerfile.linux -t pointlab-build:v2.0.0-amd64 .
+docker run --rm --platform linux/amd64 --mount "type=bind,source=$($PWD.Path),target=/workspace" pointlab-build:v2.0.0-amd64
 ```
 
 ## 设置与排错
@@ -223,11 +287,16 @@ docker run --rm --platform linux/amd64 --mount "type=bind,source=$($PWD.Path),ta
 
 代码目录：`apps/` 入口、`core/` 数据与算法、`ui/` 界面、`resources/` 图标、`packaging/` 构建、`tests/` 测试。
 
-使用说明、验证记录和清理清单统一从 [文档目录](docs/README.md) 查阅；手动整理文件前请看 [可删除文件清单](docs/cleanup-guide.md)。
+使用说明与验证记录可从 [文档目录](docs/README.md) 查阅。历史记录中的本机路径、分支和成品状态保留当时情况；当前版本的获取和使用方式以本页为准。
 
 ## 更新记录
 
-### v2.0.0 · 2026-11-09 · 本地 Windows 版
+### v2.0.0 · 2026-11-09
+
+- 发布 v2.0.0 源码至 `main`，以同名标签固定版本；更新首页导航、功能概览及 Windows 成品校验信息。
+- 新增当前帧完整点云提取、关联多帧批量 PCD 导出与来源清单；保留数值字段和纳秒时间戳，支持取消和失败清理。
+- 新增图像为点云赋色、三维框到图像的投影联动，以及双窗格颜色设置的保存恢复。
+- 优化三视图批量绘制、点云范围计算、MCAP reader 复用和算法按需加载；启动动画使用独立轻量进程。
 
 - 修复较大树冠的前后帧关联误判，启动关联、查看进度和跳转有框帧更直接；新增无框帧返回入口，保留人工修正。
 - Windows 包补齐动态 ROS 类型库及消息序列化依赖，避免图像和相机参数因缺少模块而退回原始消息；包含 ROS1/ROS2 BAG、MCAP 原始与压缩图像等已有读取能力。
