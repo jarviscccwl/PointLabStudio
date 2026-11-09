@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import time
+import logging
 from typing import Optional
 
 import numpy as np
@@ -20,6 +21,7 @@ import pygfx as gfx
 
 from core.color.colormaps import compute_colors
 from core.geometry import lod
+from ui.viewport.annotation_overlay import AnnotationOverlay, annotation_corners
 
 # 转盘相机手感：旋转灵敏度（弧度/像素）、滚轮缩放步长。
 ORBIT_SPEED = 0.0045
@@ -97,10 +99,13 @@ class PointCloudViewport(RenderCanvas):
     key_show_help = Signal()
     key_point_size = Signal(float)   # delta
     fps_updated = Signal(float)
+    render_problem = Signal(str)
     files_dropped = Signal(list)
     measured = Signal(float)          # 两点距离（米）
     mode_changed = Signal(str)        # "" / "measure" / "select" / "box" / "lasso"
     selection_changed = Signal(object)  # [(entity, np.ndarray indices), ...]；[] 表示清空
+    box_creation_requested = Signal()
+    annotation_selected = Signal(str)
     navigation_changed = Signal(bool)
     camera_changed = Signal()
     clip_drag_started = Signal()
@@ -171,12 +176,16 @@ class PointCloudViewport(RenderCanvas):
         self._fps_time = time.monotonic()
         self._running = True
         self._needs_draw = True
+        self._render_failures = 0
+        self._stall_recoveries = 0
+        self._last_recovery_at = 0.0
         self._lod_state: dict[int, int] = {}
         self._lod_metrics: dict = {}
         self._lod_counts: dict[int, int] = {}  # 脏标记：只在场景/相机变化后实际提交 GPU 帧
 
         # P4：交互模式（测量 / 选点）
         self._mode = None
+        self.box_input_enabled = False
         self._measure_pts = []
         self._measure_objs = []
         self._selected_point = None
@@ -199,6 +208,7 @@ class PointCloudViewport(RenderCanvas):
         self._sel_points = []
         self._sel_highlight = None       # 选中点的高亮 gfx.Points
         self._sel_rubber = _SelectionRubber(self)
+        self._annotation_overlay = AnnotationOverlay(self)
 
         # RenderCanvas 的内层 QWidget 消费鼠标事件，不会传到外层工具处理器。
         self._subwidget.installEventFilter(self)
@@ -208,6 +218,10 @@ class PointCloudViewport(RenderCanvas):
         self._ensure_empty_label()
 
         self.request_draw(self._animate)
+        self._render_watchdog = QTimer(self)
+        self._render_watchdog.setInterval(250)
+        self._render_watchdog.timeout.connect(self._check_render_health)
+        self._render_watchdog.start()
 
     # ---------------- 空状态标签 ----------------
     def _ensure_empty_label(self):
@@ -258,9 +272,23 @@ class PointCloudViewport(RenderCanvas):
     # ---------------- 渲染循环 ----------------
     def stop(self):
         """停止渲染循环（关闭前调用，避免画布销毁后 wgpu 回调仍触发）。"""
+        if not self._running:
+            return
         self._running = False
+        self._render_watchdog.stop()
         self._clip_stats_timer.stop()
         self._clip_stats_job = None
+        self._annotation_overlay.clear()
+        # rendercanvas 2.7.2 close() does not cancel pending bitmap downloads.
+        # Drain its downloader before deleting Qt, including zero-size canvases
+        # where force_draw() would skip presentation. Screen contexts have none.
+        try:
+            context = getattr(self._subwidget, "_canvas_context", None)
+            downloader = getattr(context, "_downloader", None)
+            if downloader is not None:
+                downloader._clear_pending_download()
+        finally:
+            self.close()
 
     def _animate(self):
         if not self._running:
@@ -268,21 +296,78 @@ class PointCloudViewport(RenderCanvas):
         now = time.monotonic()
         dt = min(max(now - self._last_frame_time, 0.0), 0.1)
         self._last_frame_time = now
-        self._step_zoom_animation(dt)
-        self._step_walk_animation(dt)
-        if self._needs_draw:
-            self._needs_draw = False
-            try:
+        try:
+            self._step_zoom_animation(dt)
+            self._step_walk_animation(dt)
+            if self._needs_draw:
+                self._needs_draw = False
+                self._annotation_overlay.update_labels()
                 self.renderer.render(self.scene, self.camera)
+                self._render_failures = 0
+                self._fps_frames += 1
+            if now - self._fps_time >= 0.5:
+                if self._fps_frames:
+                    self.fps_updated.emit(self._fps_frames / (now - self._fps_time))
+                self._fps_frames = 0
+                self._fps_time = now
+        except Exception as error:
+            # A dirty frame must survive a failed overlay/render operation.
+            # In particular, do not let an exception skip scheduling the next draw.
+            self._needs_draw = True
+            self._render_failures += 1
+            if self._render_failures == 1:
+                logging.getLogger(__name__).exception("Point-cloud draw failed; retrying")
+            if self._render_failures == 3:
+                self.render_problem.emit(f"点云显示暂时异常，请重新加载该话题。{error}")
+        finally:
+            if self._running:
+                self.request_draw()
+
+    def _check_render_health(self):
+        if (not self._running or not self.isVisible() or self.window().isMinimized()
+                or min(self.get_physical_size()) <= 0):
+            return
+        now = time.monotonic()
+        if now - self._last_frame_time < 1.0:
+            # A forced frame alone is not evidence that the scheduler resumed.
+            if self._last_frame_time > self._last_recovery_at + .05:
+                self._stall_recoveries = 0
+            return
+        self._last_recovery_at = now
+        if self.recover_rendering():
+            # A delayed Qt callback can follow a slow load or window transition.
+            # Count failed presentations, not successful forced redraws.
+            self._stall_recoveries = 0
+            return
+        self._stall_recoveries += 1
+        if self._stall_recoveries == 3:
+            self.render_problem.emit("点云显示未能恢复，播放已暂停。请在话题菜单中重新加载。")
+
+    def recover_rendering(self):
+        """Recover a stalled presentation scheduler through the public canvas API.
+
+        rendercanvas 2.7.2 can leave its scheduler waiting after a presentation
+        initialization exception. Another request_draw alone cannot release it;
+        a synchronous presentation completes the pending scheduler event.
+        """
+        if not self._running:
+            return False
+        self._needs_draw = True
+        self.request_draw(self._animate)
+        if self.isVisible() and min(self.get_physical_size()) > 0:
+            try:
+                previous = getattr(self._subwidget, "_last_image", None)
+                self.force_draw()
+                # Qt bitmap presentation creates a new retained image tuple.
+                # rendercanvas catches present errors internally, so returning
+                # from force_draw alone does not establish that a frame arrived.
+                presented = getattr(self._subwidget, "_last_image", None)
+                return (not self._needs_draw and presented is not None
+                        and presented is not previous)
             except Exception:
-                pass
-            self._fps_frames += 1
-        if now - self._fps_time >= 0.5:
-            if self._fps_frames:
-                self.fps_updated.emit(self._fps_frames / (now - self._fps_time))
-            self._fps_frames = 0
-            self._fps_time = now
-        self.request_draw()
+                logging.getLogger(__name__).exception("Point-cloud display recovery failed")
+                return False
+        return True
 
     def _invalidate(self, *_args):
         """标记需要重绘；空闲时不再空转 GPU。"""
@@ -417,7 +502,8 @@ class PointCloudViewport(RenderCanvas):
         mins, maxs = [], []
         for e in self.entities:
             if e.visible and e.xyz is not None and len(e.xyz):
-                b = e.bounds()
+                metrics = self._lod_metrics.get(id(e))
+                b = metrics[3] if metrics is not None and metrics[0] is e.xyz else e.bounds()
                 if b is not None:
                     mins.append(b[0])
                     maxs.append(b[1])
@@ -427,9 +513,19 @@ class PointCloudViewport(RenderCanvas):
 
     # ---------------- 数据刷新 ----------------
     def set_entities(self, entities: list):
+        self._annotation_overlay.clear()
         self.entities = list(entities)
         self._proj_cache.clear()
         self.refresh()
+
+    def set_annotation_boxes(self, boxes: list[dict]):
+        """Show source-coordinate boxes for this frame, separate from screen selection.
+
+        Each dictionary contains id, name, center XYZ, size length/width/height,
+        yaw in radians, selected and manual. Reapply after set_entities().
+        """
+        if self._running:
+            self._annotation_overlay.set_boxes(boxes)
 
     def set_theme(self, theme: str):
         self.theme = theme
@@ -438,6 +534,7 @@ class PointCloudViewport(RenderCanvas):
         self._update_clip_lines()
         if self._measure_pts:
             self._draw_measurement_polyline()
+        self._annotation_overlay.update_theme()
         self.refresh()
 
     def set_clip_box(self, mn, mx):
@@ -468,6 +565,7 @@ class PointCloudViewport(RenderCanvas):
         planes = self._clip_planes()
         for obj in self._points_objs:
             obj.material.clipping_planes = planes
+        self._annotation_overlay.update_clip_planes()
 
     def _schedule_clip_statistics(self):
         self._clip_stats_timer.stop()
@@ -657,9 +755,9 @@ class PointCloudViewport(RenderCanvas):
         if metrics is None or metrics[0] is not entity.xyz:
             bounds = entity.bounds()
             mn, mx = bounds if bounds is not None else (np.zeros(3), np.zeros(3))
-            metrics = (entity.xyz, (mn + mx) / 2, float(np.linalg.norm(mx - mn)))
+            metrics = (entity.xyz, (mn + mx) / 2, float(np.linalg.norm(mx - mn)), bounds)
             self._lod_metrics[id(entity)] = metrics
-        _, center, extent = metrics
+        _, center, extent = metrics[:3]
         distance = float(np.linalg.norm(np.asarray(self.camera.world.position) - center))
         return lod.lod_budget(entity.point_count, extent, distance)
 
@@ -775,6 +873,8 @@ class PointCloudViewport(RenderCanvas):
         self._center_empty_label()
 
         self._schedule_clip_statistics()
+
+        self._annotation_overlay.refresh_highlight()
 
     # ---------------- 网格实体 ----------------
     def add_mesh_entity(self, mesh):
@@ -1461,6 +1561,9 @@ class PointCloudViewport(RenderCanvas):
 
     def mousePressEvent(self, event):
         self.setFocus()
+        if (self.box_input_enabled and event.button() == Qt.LeftButton
+                and event.modifiers() & Qt.ControlModifier):
+            self.box_creation_requested.emit()
         if self._sel_mode is not None and event.button() == Qt.LeftButton:
             pos = event.position()
             self._sel_dragging = True
@@ -1478,6 +1581,10 @@ class PointCloudViewport(RenderCanvas):
             return
         pos = event.position()
         if event.button() == Qt.LeftButton:
+            target = self._annotation_at(pos.x(), pos.y()) if self.box_input_enabled else None
+            if target is not None:
+                self.annotation_selected.emit(target)
+                return
             if self._begin_clip_drag(float(pos.x()), float(pos.y())):
                 return
             self._drag = ("orbit", float(pos.x()), float(pos.y()))
@@ -1486,6 +1593,23 @@ class PointCloudViewport(RenderCanvas):
             self._drag = ("pan", float(pos.x()), float(pos.y()))
             return
         super().mousePressEvent(event)
+
+    def _annotation_at(self, x, y):
+        """Pick a visible cuboid face; prefer the nearest overlapping box."""
+        candidates = []
+        faces = ((0, 1, 2, 3), (4, 5, 6, 7), (0, 1, 5, 4),
+                 (1, 2, 6, 5), (2, 3, 7, 6), (3, 0, 4, 7))
+        for box in self._annotation_overlay.boxes:
+            sx, sy, depth, ok = self._project_points(annotation_corners(box))
+            for face in faces:
+                indices = np.asarray(face)
+                if not ok[indices].all():
+                    continue
+                polygon = np.column_stack((sx[indices], sy[indices]))
+                if _points_in_polygon(np.array([x]), np.array([y]), polygon)[0]:
+                    candidates.append((float(depth[indices].mean()), box["id"]))
+                    break
+        return min(candidates)[1] if candidates else None
 
     def mouseMoveEvent(self, event):
         pos = event.position()

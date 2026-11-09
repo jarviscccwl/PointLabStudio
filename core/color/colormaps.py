@@ -144,15 +144,13 @@ def sample_colormap(name: str, t: np.ndarray) -> np.ndarray:
 
     t = np.clip(np.asarray(t, dtype=np.float32), 0.0, 1.0)
     flat = t.reshape(-1)
-    idx = np.searchsorted(pos, flat, side="right") - 1
-    idx = np.clip(idx, 0, len(stops) - 2)
-
-    t0, t1 = pos[idx], pos[idx + 1]
-    c0, c1 = col[idx], col[idx + 1]
-    w = np.clip((flat - t0) / np.maximum(t1 - t0, 1e-8), 0.0, 1.0)[:, None]
-
-    rgb = c0 * (1.0 - w) + c1 * w
-    return np.clip(rgb.reshape(t.shape + (3,)), 0.0, 1.0).astype(np.float32)
+    # Interpolate channels directly instead of materializing two Nx3 endpoint
+    # arrays and several Nx3 products for every displayed cloud.
+    rgb = np.empty((len(flat), 3), dtype=np.float32)
+    for channel in range(3):
+        rgb[:, channel] = np.interp(flat, pos, col[:, channel])
+    np.clip(rgb, 0.0, 1.0, out=rgb)
+    return rgb.reshape(t.shape + (3,))
 
 
 def scalar_to_rgb(values: np.ndarray, colormap: str = "default",

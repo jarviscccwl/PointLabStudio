@@ -291,23 +291,30 @@ class RecordingSceneTests(unittest.TestCase):
         duplicate = SourceInfo(str(self.root / "duplicate" / "DriveA.MCAP"), "MCAP",
                                [StreamInfo("front", "/other/front", "image", count=1)])
         self.panel.set_recordings([*self.recordings, (duplicate, ["front"])])
-        requested, reloaded = [], []
+        requested, reloaded, topics = [], [], []
         self.assertTrue(hasattr(self.panel, "recording_options_requested"))
         self.assertTrue(hasattr(self.panel, "recording_reload_requested"))
         self.panel.recording_options_requested.connect(requested.append)
         self.panel.recording_reload_requested.connect(reloaded.append)
+        self.panel.recording_topic_reload_requested.connect(topics.append)
         for path in (self.source_a.path, duplicate.path):
             stream = self.panel.recording_item(path, "front")
             for item in (stream.parent(), stream):
                 menu = self.menu(item)
                 actions = {action.text(): action for action in menu.actions()}
                 actions["数据包概览 / 重新选择…"].trigger()
-                actions["重新读取数据源"].trigger()
+                actions["重新索引整个数据源"].trigger()
+                if item is stream:
+                    actions["重新加载此话题"].trigger()
+                    self.assertEqual(topics[-1], (path, "front"))
+                else:
+                    self.assertNotIn("重新加载此话题", actions)
                 menu.close()
                 self.assertEqual(requested[-1], path)
                 self.assertEqual(reloaded[-1], path)
         self.assertEqual(len(requested), 4)
         self.assertEqual(len(reloaded), 4)
+        self.assertEqual(len(topics), 2)
 
 
 if __name__ == "__main__":

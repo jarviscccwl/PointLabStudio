@@ -23,6 +23,13 @@ _QSS = Template("""
 QMainWindow, QDialog {
     background: ${bg};
 }
+QScrollArea#trackingScroll, QWidget#trackingScrollViewport, QWidget#trackingContent {
+    background: ${bg};
+    border: none;
+}
+QDialog#objectTrackingDialog QGroupBox {
+    background: ${panel};
+}
 
 /* ---------- Dock 与面板 ---------- */
 QDockWidget {
@@ -262,6 +269,7 @@ QStatusBar::item { border: none; }
 /* ---------- 进度条 ---------- */
 QProgressBar {
     background: ${panel2};
+    selection-background-color: ${accent};
     border: none;
     border-radius: 4px;
     height: 6px;
@@ -384,7 +392,7 @@ QTreeWidget#sceneList QHeaderView::section {
     border: none; border-bottom: 1px solid ${border}; font-size: 11px;
 }
 QLabel#sectionTitle { font-size: 12px; font-weight: 600; color: ${text2}; letter-spacing: 0.2px; }
-QLabel#dim { color: ${text3}; font-size: 11px; }
+QLabel#dim { color: ${text2}; font-size: 11px; }
 QListWidget#sceneList { background: transparent; border: none; padding: 0; }
 QWidget#sceneCard { background: ${panel2}; border-radius: 12px; }
 QWidget#sceneCard:hover { background: ${panel3}; }

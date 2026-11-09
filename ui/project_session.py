@@ -103,7 +103,10 @@ class ProjectSessionMixin:
 
     def _has_unsaved_project(self) -> bool:
         # Source-only browsing is disposable; derived data and saved workspaces are not.
-        if not self._project_path and not self.meshes and all(e.path for e in self.entities):
+        browser = getattr(self, "recording_browser", None)
+        annotations = browser is not None and browser.tracking.has_annotations
+        if (not self._project_path and not self.meshes and not annotations
+                and all(e.path for e in self.entities)):
             return False
         return self._project_signature() != self._project_baseline
 

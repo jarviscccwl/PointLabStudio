@@ -62,7 +62,10 @@ class FrameBrowser(QWidget):
         self.splitter.setChildrenCollapsible(False)
         self.primary_pane, self.primary_title = self._pane(primary)
         self.splitter.addWidget(self.primary_pane)
-        root.addWidget(self.splitter, 1)
+        self.box_splitter = QSplitter(Qt.Vertical)
+        self.box_splitter.setChildrenCollapsible(False)
+        self.box_splitter.addWidget(self.splitter)
+        root.addWidget(self.box_splitter, 1)
         self.previous.clicked.connect(self.previous_requested)
         self.next.clicked.connect(self.next_requested)
         self.compare.toggled.connect(self._toggle_comparison)
@@ -72,6 +75,12 @@ class FrameBrowser(QWidget):
         primary.navigation_changed.connect(lambda _: self._sync_camera(primary))
         self.set_current(None, -1, 0)
         self.set_theme(primary.theme)
+
+    def attach_box_panel(self, panel):
+        self.box_splitter.addWidget(panel)
+        self.box_splitter.setStretchFactor(0, 3)
+        self.box_splitter.setStretchFactor(1, 2)
+        self.box_splitter.setSizes([max(220, self.height() - 300), 260])
 
     def _pane(self, viewport):
         pane = QWidget()

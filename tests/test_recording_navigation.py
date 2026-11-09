@@ -193,6 +193,76 @@ class RecordingNavigationTests(unittest.TestCase):
         self.assertIn("1700000000123456789", text)
         self.assertIn("1700000000123556789", text)
 
+    def test_export_suggests_windows_safe_filename_for_network_stream(self):
+        source = self.load({"lidar": [FrameData("text", "payload", 0, 0)]})
+        source.info.streams[0].name = 'EM4 192.168.1.2:6699 / front\\scan?*<>|"'
+        with patch("ui.widgets.recording_browser.QFileDialog.getSaveFileName", return_value=("", "")) as choose:
+            self.browser.export_current()
+        self.assertNotRegex(choose.call_args.args[2], r'[<>:"/\\|?*\x00-\x1f]')
+        self.assertTrue(choose.call_args.args[2].endswith("_000000_0.txt"))
+
+    def test_add_secondary_cloud_uses_its_original_frame_number(self):
+        cloud = CloudEntity("cloud", xyz=np.array([[0, 0, 2]], dtype=np.float32))
+        self.load({"image": [FrameData("image", np.zeros((5, 6, 3), np.uint8), 100, 100)],
+                   "lidar": [FrameData("pointcloud", cloud, stamp, stamp) for stamp in (0, 50, 100)]})
+        self.browser.compare.setChecked(True)
+        self.idle()
+        added = []
+        self.browser.cloud_to_scene.connect(added.append)
+        self.browser._add_cloud()
+        self.assertEqual(len(added), 1)
+        self.assertIn("帧 3", added[0].name)
+        self.assertIsNone(added[0].path)
+
+    def test_missing_extrinsics_keeps_image_visible_without_projection_error(self):
+        from core.calibration import calibration_from_dict
+
+        cloud = CloudEntity("cloud", xyz=np.array([[0, 0, 2]], dtype=np.float32))
+        self.load({"image": [FrameData("image", np.zeros((5, 6, 3), np.uint8), 0, 0)],
+                   "lidar": [FrameData("pointcloud", cloud, 0, 0)]})
+        self.browser.compare.setChecked(True)
+        self.idle()
+        self.browser.calibration = calibration_from_dict({
+            "K": [[5, 0, 3], [0, 5, 2], [0, 0, 1]], "width": 6, "height": 5,
+        })
+        self.browser.overlay.setChecked(True)
+        self.idle()
+        self.assertEqual(self.browser.left.frame.kind, "image")
+        self.assertTrue(self.browser.overlay.isChecked())
+        self.assertFalse(self.browser.overlay.isEnabled())
+        self.assertNotIn("失败", self.browser.status.text())
+        self.assertIn("外参", self.browser.calibration_panel.projection_hint.text())
+
+    def test_unmatched_view_explains_missing_clock_and_nearest_difference(self):
+        self.load({"a": [FrameData("text", "left", None, 0)],
+                   "b": [FrameData("text", "right", None, 150_000_000)]})
+        self.browser.compare.setChecked(True)
+        self.idle()
+        self.assertIn("150.000", self.browser.status.text())
+        self.assertIn("50.000", self.browser.status.text())
+        self.assertIsNone(self.browser.right.frame)
+        self.browser.basis.setCurrentIndex(1)
+        self.idle()
+        self.assertIn("主视图", self.browser.status.text())
+        self.assertIn("设备", self.browser.status.text())
+
+    def test_failed_secondary_decode_is_not_reported_as_a_successful_match(self):
+        source = self.load({"a": [FrameData("text", "left", 0, 0)],
+                            "b": [FrameData("text", "right", 0, 0)]})
+        read = source.read_frame
+
+        def fail_secondary(stream_id, index, cancel=None):
+            if stream_id == "b":
+                raise ValueError("unsupported image encoding")
+            return read(stream_id, index, cancel)
+
+        source.read_frame = fail_secondary
+        self.browser.compare.setChecked(True)
+        self.idle()
+        self.assertIsNone(self.browser.right.frame)
+        self.assertIn("读取失败", self.browser.status.text())
+        self.assertNotIn("右侧时间差", self.browser.status.text())
+
 
 if __name__ == "__main__":
     unittest.main()

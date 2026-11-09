@@ -28,7 +28,7 @@ from PySide6.QtCore import QEventLoop, QSize, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QDialog, QFileDialog, QHBoxLayout, QLabel, QMainWindow, QMenu,
-    QMessageBox, QPlainTextEdit, QProgressDialog, QScrollArea, QSlider, QSplitter, QToolButton,
+    QMessageBox, QPlainTextEdit, QScrollArea, QSlider, QSplitter, QToolButton,
     QStackedWidget, QVBoxLayout, QWidget,
 )
 
@@ -67,6 +67,7 @@ from ui.widgets.script_dialog import ScriptDialog
 from ui.widgets.frame_browser import FrameBrowser
 from ui.widgets.lidar_import_dialog import LidarImportDialog
 from ui.widgets.recording_browser import RecordingBrowser
+from ui.widgets.smooth_progress import SmoothProgressDialog
 
 COLOR_SHORTCUT_MODES = tuple(COLOR_MODES)
 
@@ -75,14 +76,15 @@ HELP_TEXT = """快捷键：
   R    重置视角          H    显示本帮助
   C    循环颜色模式      B    开关裁剪范围
   1 高度 · 2 强度 · 3 RGB · 4 标签 · 5 标量场 · 6 单色（视口或场景获得焦点时）
-  Space 显示/隐藏当前选中点云
+  Space 场景中显示/隐藏当前选中点云；采集包点云/图像预览中播放/暂停
+  Home/End 采集包点云/图像预览中暂停并跳到首帧/末帧
   +/=  增大点大小        -/_  减小点大小
   W/S  上/下平移相机     A/D  左/右平移相机
   Q/E  后退/前进平移相机
 测量：顶栏「测量」→ 点两个点测距；Esc 退出
 选点：顶栏「选点」→ 单击查看坐标与属性；Esc 退出
 文件：Ctrl+O 打开文件 · Ctrl+Shift+O 文件夹 · Ctrl+P 打开工作区 · Ctrl+S 保存工作区 · Ctrl+E 导出点云 · Ctrl+L 日志
-雷达包：打开 → 导入雷达包 (pcap / mcap)，支持 RoboSense EM4 与 PointCloud2
+采集包：打开文件或文件夹 → 查看内容概览 → 选择数据流浏览；支持 PCAP / MCAP / BAG
 鼠标：左键拖拽旋转 · 右键/中键拖拽平移 · Alt + 拖拽/滚轮以 20% 速度微调相机
 视角：自由视角绕中心旋转、滚轮缩放；固定视角锁定当前高度、原地水平转向、滚轮沿 XY 平面平滑前后移动
 裁剪：按包围盒后关闭面板，拖动橙色框面中央的圆点调整边界；Esc 取消本次拖动
@@ -325,6 +327,7 @@ class MainWindow(RecordingSessionMixin, ProjectSessionMixin, QMainWindow):
         self._closing = False
         self._sync_guard = False
         self._selection: list = []  # [(entity, indices), ...] 框选/套索结果
+        self._scene_box_tool = None
         self._icon_buttons = []
 
         self._build_ui()
@@ -374,6 +377,9 @@ class MainWindow(RecordingSessionMixin, ProjectSessionMixin, QMainWindow):
         panes.addWidget(self.scene_panel)
         self.frame_browser = FrameBrowser(self.viewport)
         self.recording_browser = RecordingBrowser(self.theme, PointCloudViewport, self)
+        # One global box tool serves scenes and recordings. Standalone browsers
+        # retain their own entry for embedding outside MainWindow.
+        self.recording_browser.tracking_button.hide()
         self.content_stack = QStackedWidget()
         self.content_stack.addWidget(self.frame_browser)
         self.content_stack.addWidget(self.recording_browser)
@@ -570,7 +576,8 @@ class MainWindow(RecordingSessionMixin, ProjectSessionMixin, QMainWindow):
         self.btn_box_select = QToolButton()
         self.btn_box_select.setObjectName("headerBtn")
         self.btn_box_select.setCheckable(True)
-        self.btn_box_select.setToolTip("框选：拖拽矩形选择点（Esc 退出）")
+        self.btn_box_select.setToolTip("3D 框选：Ctrl 拖动建框，三个视图调整，并关联前后帧")
+        self.btn_box_select.setText("3D 框选")
         self.btn_box_select.toggled.connect(self._on_box_toggled)
         self._register_icon(self.btn_box_select, "select")
 
@@ -662,6 +669,8 @@ class MainWindow(RecordingSessionMixin, ProjectSessionMixin, QMainWindow):
                 btn.setIcon(icon)
 
     def _build_bottom_bar(self) -> QWidget:
+        from ui.widgets.data_view import ElidedLabel
+
         bar = QWidget()
         bar.setObjectName("bottomBar")
         lay = QHBoxLayout(bar)
@@ -670,12 +679,10 @@ class MainWindow(RecordingSessionMixin, ProjectSessionMixin, QMainWindow):
 
         self.status_points = QLabel("0 点")
         self.status_points.setObjectName("metric")
-        self.status_mode = QLabel("")
-        self.status_mode.setWordWrap(True)
+        self.status_mode = ElidedLabel()
         self.status_mode.setObjectName("metric")
         self.status_mode.setStyleSheet("")
-        self.status_task = QLabel("")
-        self.status_task.setWordWrap(True)
+        self.status_task = ElidedLabel()
         self.status_task.setObjectName("metric")
         self.status_mem = QLabel("0 MB")
         self.status_mem.setObjectName("metric")
@@ -683,8 +690,8 @@ class MainWindow(RecordingSessionMixin, ProjectSessionMixin, QMainWindow):
         self.status_fps.setObjectName("metric")
 
         lay.addWidget(self.status_points)
-        lay.addWidget(self.status_mode)
-        lay.addWidget(self.status_task)
+        lay.addWidget(self.status_mode, 1)
+        lay.addWidget(self.status_task, 1)
         self.btn_cancel_task = QToolButton()
         self.btn_cancel_task.setText("取消任务")
         self.btn_cancel_task.setToolTip("请求取消当前处理；部分算法需等待当前计算阶段结束")
@@ -693,7 +700,6 @@ class MainWindow(RecordingSessionMixin, ProjectSessionMixin, QMainWindow):
         lay.addWidget(self.btn_cancel_task)
         lay.addWidget(self.status_mem)
         lay.addWidget(self.status_fps)
-        lay.addStretch(1)
 
         self.btn_log = QToolButton()
         self.btn_log.setObjectName("headerBtn")
@@ -802,13 +808,17 @@ class MainWindow(RecordingSessionMixin, ProjectSessionMixin, QMainWindow):
             "Ctrl+Z": self._undo,
             "Ctrl+Shift+Z": self._redo,
             "Ctrl+Y": self._redo,
-            "Space": self._toggle_selected_visibility,
             "Esc": self._escape_tools,
             "Ctrl+Q": self.close,
         }
         for seq, slot in shortcuts.items():
             sc = QShortcut(QKeySequence(seq), self)
             sc.activated.connect(slot)
+        for widget in (self.frame_browser.splitter, self.scene_panel.list):
+            sc = QShortcut(QKeySequence("Space"), widget)
+            sc.setContext(Qt.WidgetWithChildrenShortcut)
+            sc.setAutoRepeat(False)
+            sc.activated.connect(self._toggle_selected_visibility)
         for key, mode in enumerate(COLOR_SHORTCUT_MODES, 1):
             index = self.cmb_color.findData(mode)
             for widget in (self.viewport, self.scene_panel):
@@ -834,6 +844,7 @@ class MainWindow(RecordingSessionMixin, ProjectSessionMixin, QMainWindow):
 
         # 顶栏视图控件
         self.cmb_color.currentIndexChanged.connect(self._on_header_color)
+        self.cmb_color.activated.connect(self._on_header_color_activated)
         self.sld_size.valueChanged.connect(self._on_header_size)
         self.act_grid.toggled.connect(self.viewport.set_grid_visible)
         self.act_grid.toggled.connect(lambda checked: self.frame_browser.secondary.set_grid_visible(checked)
@@ -869,6 +880,9 @@ class MainWindow(RecordingSessionMixin, ProjectSessionMixin, QMainWindow):
         self.viewport.measured.connect(lambda d: self.log(f"测量折线累计: {d:.3f} m"))
         self.viewport.mode_changed.connect(self._on_mode_changed)
         self.viewport.selection_changed.connect(self._on_viewport_selection)
+        self.viewport.box_creation_requested.connect(self._start_scene_box)
+        self.viewport.box_input_enabled = True
+        self.viewport.render_problem.connect(lambda message: (self.log(message), self._flash_status(message, 8000)))
         self.overview.colorbar.field_changed.connect(self._on_colorbar_field)
         self.overview.colorbar.range_changed.connect(self._on_colorbar_range)
         self.overview.colorbar.range_reset.connect(self._on_colorbar_reset)
@@ -904,6 +918,11 @@ class MainWindow(RecordingSessionMixin, ProjectSessionMixin, QMainWindow):
             self.viewport.focus_entity(entity)
 
     def _sync_view_controls(self, entity):
+        if (hasattr(self, "recording_browser") and
+                self.content_stack.currentWidget() is self.recording_browser):
+            frames = self.recording_browser.current_frames
+            self._recording_frame_changed(frames[0] if frames else None)
+            return
         self._sync_guard = True
         enabled = entity is not None
         self.cmb_color.setEnabled(enabled)
@@ -947,7 +966,17 @@ class MainWindow(RecordingSessionMixin, ProjectSessionMixin, QMainWindow):
         self.overview.set_entity(entity)
         self._refresh_scene()
 
+    def _on_header_color_activated(self, index):
+        # Selecting RGB again is meaningful while the effective display is
+        # image RGB: return to the source RGB field, even if the index is equal.
+        if (self.content_stack.currentWidget() is self.recording_browser
+                and self.recording_browser.calibration_panel.colorize.isChecked()):
+            self._on_header_color(index)
+
     def _on_colorbar_field(self, name: str):
+        if self.content_stack.currentWidget() is self.recording_browser:
+            self.recording_browser.set_color_field("" if name == "height" else name)
+            return
         entity = self.scene_panel.current_entity()
         if entity is None:
             return
@@ -962,6 +991,9 @@ class MainWindow(RecordingSessionMixin, ProjectSessionMixin, QMainWindow):
         self._refresh_scene()
 
     def _on_colorbar_range(self, lo: float, hi: float):
+        if self.content_stack.currentWidget() is self.recording_browser:
+            self.recording_browser.set_color_range((lo, hi))
+            return
         entity = self.scene_panel.current_entity()
         if entity is None:
             return
@@ -969,6 +1001,9 @@ class MainWindow(RecordingSessionMixin, ProjectSessionMixin, QMainWindow):
         self._refresh_scene()
 
     def _on_colorbar_reset(self):
+        if self.content_stack.currentWidget() is self.recording_browser:
+            self.recording_browser.set_color_range(None)
+            return
         entity = self.scene_panel.current_entity()
         if entity is None:
             return
@@ -976,6 +1011,9 @@ class MainWindow(RecordingSessionMixin, ProjectSessionMixin, QMainWindow):
         self._refresh_scene()
 
     def _on_cmap_action(self, name: str):
+        if self.content_stack.currentWidget() is self.recording_browser:
+            self.recording_browser.set_colormap(name)
+            return
         entity = self.scene_panel.current_entity()
         if entity is None:
             return
@@ -1069,9 +1107,35 @@ class MainWindow(RecordingSessionMixin, ProjectSessionMixin, QMainWindow):
     def _on_box_toggled(self, checked: bool):
         if getattr(self, "_sync_guard", False):
             return
-        self._set_tool("box" if checked else None)
+        if self.content_stack.currentWidget() is self.recording_browser:
+            control = self.recording_browser.tracking
+            if checked:
+                self.recording_browser.show_box_editor()
+                if control._track() is None:
+                    control.set_mode("box")
+            elif control.dialog is not None:
+                control.dialog.close()
+        elif checked:
+            self._start_scene_box()
+        else:
+            self._set_tool(None)
+
+    def _start_scene_box(self):
+        if self._scene_box_tool is None:
+            from ui.widgets.scene_box import SceneBoxController
+            self._scene_box_tool = SceneBoxController(self)
+        if not self._scene_box_tool.start():
+            self._sync_guard = True
+            self.btn_box_select.setChecked(False)
+            self._sync_guard = False
+            self._flash_status("请先打开点云")
 
     def _set_tool(self, mode):
+        if self._scene_box_tool is not None and self._scene_box_tool.active:
+            self._scene_box_tool.close()
+        if mode == "box":
+            self._start_scene_box()
+            return
         if mode is not None and not any(
                 e.visible and e.xyz is not None and len(e.xyz) for e in self.entities):
             self._sync_guard = True
@@ -1097,11 +1161,20 @@ class MainWindow(RecordingSessionMixin, ProjectSessionMixin, QMainWindow):
             self.log("框选模式：拖拽矩形选择点（Esc 退出）")
 
     def _escape_tools(self):
+        if self.content_stack.currentWidget() is self.recording_browser:
+            control = self.recording_browser.tracking
+            control.set_mode(None)
+            return
+        if self._scene_box_tool is not None and self._scene_box_tool.active:
+            self._scene_box_tool.close()
+            return
         self.viewport.cancel_clip_drag()
         if getattr(self.viewport, "_mode", None) is not None:
             self._set_tool(None)
 
     def _on_mode_changed(self, mode: str):
+        if self._scene_box_tool is not None and self._scene_box_tool.active:
+            mode = "box"
         self._sync_guard = True
         self.btn_measure.setChecked(mode == "measure")
         self.btn_select.setChecked(mode == "select")
@@ -1113,6 +1186,9 @@ class MainWindow(RecordingSessionMixin, ProjectSessionMixin, QMainWindow):
 
     # ---------------- E18：框选 ----------------
     def _on_viewport_selection(self, selection):
+        if self._scene_box_tool is not None and self._scene_box_tool.armed:
+            self._scene_box_tool.initialize(selection)
+            return
         self._selection = list(selection or [])
         total = int(sum(len(idx) for _, idx in self._selection))
         if total:
@@ -2118,7 +2194,7 @@ class MainWindow(RecordingSessionMixin, ProjectSessionMixin, QMainWindow):
             return True
         if entity.load_state == "error":
             entity.load_state = "unloaded"
-        progress = QProgressDialog(f"正在加载参考点云：{entity.name}", "取消", 0, 0, self)
+        progress = SmoothProgressDialog(f"正在加载参考点云：{entity.name}", "取消", 0, 0, self)
         progress.setWindowTitle("加载参考点云")
         progress.setMinimumDuration(0)
         timer = QTimer(progress)
@@ -2316,7 +2392,7 @@ class MainWindow(RecordingSessionMixin, ProjectSessionMixin, QMainWindow):
 
     def _flash_status(self, text: str, msec: int = 2600):
         self.status_mode.setText(text)
-        QTimer.singleShot(msec, lambda: self.status_mode.setText(self._mode_status_text()))
+        QTimer.singleShot(msec, self, lambda: self.status_mode.setText(self._mode_status_text()))
 
     def _remove_entity_now(self, entity: CloudEntity):
         thread = self._threads.get(entity.path)
@@ -2516,7 +2592,7 @@ class MainWindow(RecordingSessionMixin, ProjectSessionMixin, QMainWindow):
             self._open_dbscan_dialog(source, eps)
             return
 
-        progress = QProgressDialog("正在估算邻域尺度（后台）…", "取消", 0, 0, self)
+        progress = SmoothProgressDialog("正在估算邻域尺度（后台）…", "取消", 0, 0, self)
         progress.setWindowTitle("DBSCAN 聚类")
         progress.setWindowModality(Qt.WindowModal)
         progress.setMinimumDuration(0)
@@ -2939,6 +3015,8 @@ class MainWindow(RecordingSessionMixin, ProjectSessionMixin, QMainWindow):
         self.viewport.set_theme(theme)
         self.frame_browser.set_theme(theme)
         self.recording_browser.set_theme(theme)
+        if self._scene_box_tool is not None:
+            self._scene_box_tool.editor.set_theme(theme)
         self.scene_panel.set_theme(theme)
         self.btn_theme.setToolTip("切换主题（当前：深色）" if theme == "dark" else "切换主题（当前：浅色）")
         self._apply_icons()
@@ -2956,6 +3034,8 @@ class MainWindow(RecordingSessionMixin, ProjectSessionMixin, QMainWindow):
         for entity in self.entities:
             self.scene_panel.update_entity(entity)
         self.viewport.set_entities([e for e in self.entities if e.visible and e.xyz is not None])
+        if self._scene_box_tool is not None:
+            self._scene_box_tool.refresh_entities()
         self._update_frame_browser()
         self._update_status()
 
@@ -2972,7 +3052,8 @@ class MainWindow(RecordingSessionMixin, ProjectSessionMixin, QMainWindow):
                       if view.frame is not None and view.frame.kind == "image"]
             details = [f"当前 {total:,} 点"] if total else []
             details.extend(f"图像 {image.shape[1]} × {image.shape[0]}" for image in images)
-            self.status_points.setText(" · ".join(details) or "数据浏览")
+            self.status_points.setText("采集浏览")
+            self.status_points.setToolTip(" · ".join(details) or "在左侧场景选择数据流")
             self.status_mem.setText(f"帧缓存 {browser._cache_bytes / 1024**2:,.0f} MB")
             return
         total = sum(e.point_count for e in self.entities)
@@ -2983,6 +3064,7 @@ class MainWindow(RecordingSessionMixin, ProjectSessionMixin, QMainWindow):
         mem += sum(m.vertices.nbytes + m.triangles.nbytes for m in self.meshes)
 
         self.status_points.setText(f"已加载 {total:,} 点" + (f"（{preview} 片预览）" if preview else ""))
+        self.status_points.setToolTip(self.status_points.text())
         self.status_mem.setText(f"{mem / 1024**2:,.0f} MB")
         try:
             self.overview.set_scene_stats(len(self.entities), total, mem)

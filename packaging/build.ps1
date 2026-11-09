@@ -1,9 +1,18 @@
-param([string]$PayloadPath)
+param(
+    [string]$PayloadPath,
+    [string]$WorkPath,
+    [string]$DistPath
+)
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-$work = Join-Path $root 'build'
-$dist = Join-Path $root 'dist'
+# Optional staging paths keep release verification separate from the installed EXE.
+$work = if ($WorkPath) { $WorkPath } else { Join-Path $root 'build' }
+$dist = if ($DistPath) { $DistPath } else { Join-Path $root 'dist' }
+if (-not [IO.Path]::IsPathRooted($work)) { $work = Join-Path $root $work }
+if (-not [IO.Path]::IsPathRooted($dist)) { $dist = Join-Path $root $dist }
+$work = [IO.Path]::GetFullPath($work)
+$dist = [IO.Path]::GetFullPath($dist)
 $python = Join-Path $root '.venv\Scripts\python.exe'
 $compiler = Join-Path $env:SystemRoot 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 if (-not (Test-Path -LiteralPath $compiler)) { throw 'Windows .NET Framework 4.x compiler was not found.' }

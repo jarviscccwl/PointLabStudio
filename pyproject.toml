@@ -1,6 +1,6 @@
 [project]
 name = "pointlab-studio"
-version = "1.3.0"
+version = "2.0.0"
 description = "PointLabStudio — 桌面点云综合处理平台（PySide6 + pygfx）"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -11,7 +11,8 @@ dependencies = [
     "PySide6>=6.6,<7",
     "pygfx>=0.4,<0.18",
     "wgpu>=0.17,<0.33",
-    "rendercanvas>=2.7,<3",
+    # Viewport shutdown drains this version's pending bitmap downloader.
+    "rendercanvas==2.7.2",
     "mcap>=1.2,<2",
     "mcap-ros2-support>=0.5,<1",
     "lz4>=4.3,<5",

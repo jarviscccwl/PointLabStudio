@@ -15,7 +15,14 @@ def build_parser():
 
 
 def main(argv=None):
-    args = build_parser().parse_args(argv)
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if len(arguments) in (2, 4) and arguments[0] == "--splash-child":
+        from ui.startup import _run_splash_child
+
+        handle = (int(arguments[3])
+                  if len(arguments) == 4 and arguments[2] == "--splash-input" else None)
+        sys.exit(_run_splash_child(arguments[1], input_handle=handle))
+    args = build_parser().parse_args(arguments)
 
     from core.applog import get_logger, setup_logging
     from core.i18n import set_language
@@ -35,6 +42,7 @@ def main(argv=None):
         set_language("zh")
     theme = args.background or settings.theme
 
+    from PySide6.QtCore import QEventLoop
     from PySide6.QtWidgets import QApplication
     from PySide6.QtGui import QIcon
     from pathlib import Path
@@ -46,17 +54,18 @@ def main(argv=None):
     app.setWindowIcon(QIcon(str(Path(__file__).resolve().parents[1] / "resources" / "app.svg")))
     app.setOrganizationName("PointLabStudio")
     app.setStyle("Fusion")
-    from ui.startup import StartupScreen
+    from ui.startup import StartupProcess
 
-    splash = StartupScreen(theme)
+    splash = StartupProcess(theme)
     try:
+        splash.set_progress(None, "正在加载点云与渲染组件…")
         from ui.main_window import MainWindow
 
-        splash.set_progress(45)
+        splash.set_progress(None, "正在创建工作台…")
         window = MainWindow(theme=theme)
-        splash.set_progress(90)
+        splash.set_progress(None, "正在准备视图…")
         window.show()
-        splash.set_progress(100)
+        app.processEvents(QEventLoop.ExcludeUserInputEvents)
         splash.finish(window)
     finally:
         splash.close()

@@ -8,7 +8,7 @@ import threading
 import time
 import unittest
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QCoreApplication, QEvent, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QDialog
 
@@ -66,6 +66,7 @@ class SourceOverviewTests(unittest.TestCase):
             wait_for(self.app, lambda: self.dialog._scan is None)
         self.dialog.close()
         self.dialog.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
         self.app.processEvents()
 
     def visible_ids(self):
@@ -88,6 +89,16 @@ class SourceOverviewTests(unittest.TestCase):
         self.dialog.details_toggle.click()
         self.assertTrue(self.dialog.detail_panel.isHidden())
         self.assertEqual(self.dialog.selection(), before)
+
+    def test_reconfigured_time_range_keeps_original_shared_time_origin(self):
+        self.dialog.set_selection({
+            "sources": {self.first.path: ["camera"]},
+            "range": {"mode": "time", "start_seconds": 1, "end_seconds": 2,
+                      "origin_ns": 1_000_000_000},
+        })
+        self.dialog.start_seconds.setValue(1.5)
+        self.assertEqual(self.dialog.selection()["range"].get("origin_ns"), 1_000_000_000)
+        self.assertIn("原导入起点", self.dialog.range_hint.text())
 
     def test_search_matches_topic_schema_and_source_path_case_insensitively(self):
         for query, expected in (
@@ -172,6 +183,8 @@ class SourceOverviewTests(unittest.TestCase):
 
     def test_full_probe_scan_discovers_streams_without_selecting_other_empty_sources(self):
         self.dialog.close()
+        self.dialog.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
         self.first.info.streams = []
         self.second.info.streams = []
 

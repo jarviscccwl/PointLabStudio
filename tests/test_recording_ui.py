@@ -13,7 +13,7 @@ from unittest.mock import patch
 import numpy as np
 from PIL import Image
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QCoreApplication, QEvent, Qt
 from PySide6.QtWidgets import QApplication, QDialog, QWidget
 from PySide6.QtTest import QTest
 
@@ -55,14 +55,14 @@ class RecordingUiTests(unittest.TestCase):
         dialog = SourceOverviewDialog([source])
         self.assertEqual(dialog.selection()["sources"][source.path], ["camera", "imu"])
         self.assertEqual(dialog.selection()["range"]["mode"], "all")
-        dialog.close()
+        dispose_widget(dialog)
 
     def test_unchecked_stream_is_excluded(self):
         source = SampleSource()
         dialog = SourceOverviewDialog([source])
         dialog.tree.topLevelItem(0).child(0).setCheckState(0, Qt.Unchecked)
         self.assertEqual(dialog.selection()["sources"][source.path], ["imu"])
-        dialog.close()
+        dispose_widget(dialog)
 
     def test_recordings_remain_in_scene_when_cloud_list_is_rebuilt(self):
         source = SampleSource()
@@ -73,7 +73,7 @@ class RecordingUiTests(unittest.TestCase):
         self.assertIsNotNone(item)
         self.assertEqual(item.data(0, RECORDING_ROLE), (source.path, "camera"))
         self.assertFalse(panel.empty.isVisibleTo(panel))
-        panel.close()
+        dispose_widget(panel)
 
     def test_unknown_probe_can_scan_whole_capture_before_selection(self):
         source = SampleSource()
@@ -90,7 +90,7 @@ class RecordingUiTests(unittest.TestCase):
         dialog._start_scan()
         wait_for(self.app, lambda: dialog._scan is None)
         self.assertEqual(dialog.selection()["sources"][source.path], ["late"])
-        dialog.close()
+        dispose_widget(dialog)
 
 
 class MemorySource(RecordingSource):
@@ -130,6 +130,13 @@ def wait_for(app, predicate, timeout=15):
     raise AssertionError("Recording operation did not finish")
 
 
+def dispose_widget(widget):
+    """Destroy test-owned Qt trees before Python interpreter shutdown."""
+    widget.close()
+    widget.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+
+
 class RecordingBrowserTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -142,7 +149,7 @@ class RecordingBrowserTests(unittest.TestCase):
         self.browser.cancel()
         wait_for(self.app, lambda: self.browser._worker is None)
         self.browser.stop()
-        self.browser.close()
+        dispose_widget(self.browser)
 
     def load(self, source):
         self.browser.set_entries(
@@ -361,7 +368,7 @@ class RecordingWindowTests(unittest.TestCase):
     def tearDown(self):
         self.idle()
         self.window._project_baseline = self.window._project_signature()
-        self.window.close()
+        dispose_widget(self.window)
         self.app.processEvents()
         self.env.stop()
         self.temp.cleanup()
@@ -381,6 +388,79 @@ class RecordingWindowTests(unittest.TestCase):
         self.assertIn("测试内容", self.window.recording_browser.left.text.toPlainText())
         self.assertEqual(self.window.entities, [])
 
+    def test_recording_header_color_and_colormap_work_on_either_cloud_pane(self):
+        from core.model.entities import CloudEntity
+        source = MemorySource({
+            "cloud": [FrameData("pointcloud", CloudEntity("cloud", xyz=np.array([[0, 0, 1], [1, 0, 2]], np.float32)), 1, 1)],
+            "image": [FrameData("image", np.zeros((12, 16, 3), np.uint8), 1, 1)],
+        })
+        browser = self.window.recording_browser
+        browser.set_entries([BrowserStream(source, stream, source.index[stream.id])
+                             for stream in source.info.streams])
+        browser.compare.setChecked(True)
+        self.window._show_recording_browser()
+        self.idle()
+        self.assertTrue(self.window.cmb_color.isEnabled())
+        self.assertTrue(all(action.isEnabled() for action in self.window._cmap_group))
+        next(action for action in self.window._cmap_group if action.data() == "inferno").trigger()
+        self.assertEqual(browser.left.cloud.colormap, "inferno")
+        browser.swap_views()
+        self.idle()
+        self.window._sync_view_controls(None)
+        self.assertTrue(self.window.cmb_color.isEnabled())
+        self.window.cmb_color.setCurrentIndex(self.window.cmb_color.findData("none"))
+        self.assertEqual(browser.right.cloud.color_mode, "none")
+        self.assertEqual(browser.right.cloud.colormap, "inferno")
+        from core.calibration import CameraCalibration
+        browser.calibration = CameraCalibration(np.array([[5., 0, 8], [0, 5, 6], [0, 0, 1]]),
+                                                np.zeros(0), 16, 12, T_camera_lidar=np.eye(4))
+        browser.calibration_panel.colorize.setChecked(True)
+        self.idle()
+        self.assertEqual(self.window.cmb_color.currentData(), "rgb")
+        self.window.cmb_color.activated.emit(self.window.cmb_color.currentIndex())
+        self.assertFalse(browser.calibration_panel.colorize.isChecked())
+        self.assertEqual(browser.right.cloud.color_mode, "rgb")
+        for button in (self.window.btn_process, self.window.btn_measure,
+                       self.window.btn_select, self.window.btn_clip, self.window.btn_navigation):
+            self.assertTrue(button.isHidden())
+        self.window._show_cloud_browser()
+        for button in (self.window.btn_process, self.window.btn_measure,
+                       self.window.btn_select, self.window.btn_clip, self.window.btn_navigation):
+            self.assertFalse(button.isHidden())
+
+    def test_capture_folder_opens_synchronized_pair_at_first_matching_frame(self):
+        from recording_fixtures import write_sensor_mcap
+
+        folder = self.base / "capture"
+        folder.mkdir()
+        xyz = np.array([[0, 0, 1], [1, 2, 3]], np.float32)
+        pixels = np.zeros((12, 16, 3), np.uint8)
+        write_sensor_mcap(folder / "a_camera.mcap",
+                          images=[(i * 10**9, pixels) for i in (2, 3)])
+        cloud_path = folder / "z_cloud.mcap"
+        write_sensor_mcap(cloud_path, clouds=[(i * 10**9, xyz) for i in (1, 2, 3)])
+        with patch.object(SourceOverviewDialog, "exec", return_value=QDialog.Accepted):
+            self.window.open_paths([str(folder)])
+            self.idle()
+        browser = self.window.recording_browser
+        self.assertEqual(browser.left.frame.kind, "pointcloud")
+        self.assertEqual(browser.right.frame.kind, "image")
+        self.assertTrue(browser.compare.isChecked())
+        self.assertEqual(browser.position.value(), 2)
+        self.assertEqual(browser.position.maximum(), 3)
+        browser.position.setValue(3)
+        self.idle()
+        self.window._reload_recording_source(str(cloud_path))
+        self.idle()
+        self.assertEqual(browser.position.value(), 3)
+        self.assertTrue(browser.compare.isChecked())
+        unrelated = self.base / "other_camera.mcap"
+        write_sensor_mcap(unrelated, images=[(3 * 10**9, pixels)])
+        self.window._open_recording_sources([str(unrelated)], prompt=False)
+        self.idle()
+        self.assertFalse(browser.compare.isChecked())
+        self.assertEqual(browser.left.frame.kind, "image")
+
     def test_data_only_workspace_round_trip_and_duplicate_open(self):
         from ui.main_window import MainWindow
 
@@ -393,7 +473,7 @@ class RecordingWindowTests(unittest.TestCase):
         self.idle()
         project = self.base / "数据.pls"
         self.assertTrue(self.window.save_project(str(project)))
-        self.window.close()
+        dispose_widget(self.window)
         self.app.processEvents()
         self.window = MainWindow()
         self.assertTrue(self.window.open_project(str(project)))
@@ -475,6 +555,109 @@ class RecordingWindowTests(unittest.TestCase):
             self.idle()
         self.assertTrue(source.closed)
         self.assertTrue(self.window._closing)
+
+    def test_reload_action_reads_changed_file_without_losing_settings_or_dirty_state(self):
+        path = self.base / "refresh.csv"
+        path.write_text("id,value\nold,1\n", encoding="utf-8")
+        self.window._open_recording_sources([str(path)], prompt=False)
+        self.idle()
+        browser = self.window.recording_browser
+        browser.offset.setValue(25)
+        self.idle()
+        self.assertTrue(self.window.save_project(str(self.base / "refresh.pls")))
+        browser.set_point_size(4)
+        old_source = self.window._recording_sources[str(path)]
+        path.write_text("id,value\nchanged,22\n", encoding="utf-8")
+        browser.reload_action.trigger()
+        self.idle()
+        self.assertIsNot(self.window._recording_sources[str(path)], old_source)
+        self.assertEqual(browser.left.frame.value["rows"], [["changed", "22"]])
+        self.assertEqual(browser.offset.value(), 25)
+        self.assertEqual(browser.point_size, 4)
+        self.assertTrue(self.window._has_unsaved_project())
+
+    def test_reconfigure_prefills_selection_and_keeps_original_frame_in_new_range(self):
+        folder = self.base / "camera"
+        folder.mkdir()
+        for i in range(5):
+            Image.new("RGB", (12, 8), (i, 0, 0)).save(folder / f"{i}.png")
+        self.window._open_recording_sources([str(folder)], prompt=False)
+        self.idle()
+        browser = self.window.recording_browser
+        browser.position.setValue(4)
+        self.idle()
+        self.assertTrue(self.window.save_project(str(self.base / "selection.pls")))
+        seen = []
+
+        def choose(dialog):
+            seen.append(dialog.selection())
+            dialog.set_selection({"sources": {str(folder): ["0"]},
+                                  "range": {"mode": "frames", "first": 1, "last": 4}})
+            return QDialog.Accepted
+
+        with patch.object(SourceOverviewDialog, "exec", choose):
+            self.window.scene_panel.recording_options_requested.emit(str(folder))
+            self.idle()
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0]["sources"], {str(folder): ["0"]})
+        self.assertEqual(seen[0]["range"]["mode"], "all")
+        self.assertEqual([ref.index for ref in browser.entries[0].frames], [1, 2, 3, 4])
+        self.assertEqual(browser.position.value(), 3)
+        self.assertEqual(browser.left.frame.metadata["filename"], "3.png")
+        self.assertTrue(self.window._has_unsaved_project())
+
+    def test_cancel_source_options_leaves_existing_view_usable(self):
+        path = self.base / "keep.txt"
+        path.write_text("keep original view", encoding="utf-8")
+        self.window._open_recording_sources([str(path)], prompt=False)
+        self.idle()
+        browser = self.window.recording_browser
+        old_source = self.window._recording_sources[str(path)]
+        seen = []
+
+        def cancel(dialog):
+            seen.append(dialog.selection())
+            return QDialog.Rejected
+
+        with patch.object(SourceOverviewDialog, "exec", cancel):
+            browser.options_action.trigger()
+            self.idle()
+        self.assertEqual(len(seen), 1)
+        self.assertIs(self.window._recording_sources[str(path)], old_source)
+        self.assertEqual(browser.left.frame.value, "keep original view")
+        self.assertTrue(browser.isEnabled())
+        self.assertIn("已取消", self.window.status_task.text())
+        self.assertNotIn("正在", self.window.status_task.text())
+
+    def test_reconfigure_removing_primary_returns_to_single_view(self):
+        from mcap.writer import Writer
+
+        path = self.base / "pair.mcap"
+        with path.open("wb") as handle:
+            writer = Writer(handle)
+            writer.start()
+            for topic in ("/a", "/b"):
+                channel = writer.register_channel(topic, "json", 0)
+                writer.add_message(channel, 100, b'{"value": 1}', 100)
+            writer.finish()
+        self.window._open_recording_sources([str(path)], prompt=False)
+        self.idle()
+        browser = self.window.recording_browser
+        browser.compare.setChecked(True)
+        self.idle()
+        secondary = browser.secondary.currentData()
+
+        def choose(dialog):
+            dialog.set_selection({"sources": {str(path): [secondary[1]]}, "range": {"mode": "all"}})
+            return QDialog.Accepted
+
+        with patch.object(SourceOverviewDialog, "exec", choose):
+            browser.options_action.trigger()
+            self.idle()
+        self.assertEqual(browser.primary.currentData(), secondary)
+        self.assertFalse(browser.compare.isChecked())
+        self.assertTrue(browser.right.isHidden())
+        self.assertFalse(browser.compare.isEnabled())
 
 
 if __name__ == "__main__":

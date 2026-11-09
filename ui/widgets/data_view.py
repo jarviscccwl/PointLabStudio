@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 )
 
 from ui.theme import get_theme
+from ui.widgets.image_annotations import ImageAnnotationLayer
 
 
 class ElidedLabel(QLabel):
@@ -95,9 +96,16 @@ class ImageView(QGraphicsView):
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.setBackgroundBrush(QColor("#17191d"))
         self._pixmap = self.scene().addPixmap(QPixmap())
+        self._box_layer = ImageAnnotationLayer(self._pixmap)
+        self.projected_boxes = []
         self._auto_fit = True
 
+    def set_projected_boxes(self, boxes):
+        self.projected_boxes = list(boxes)
+        self._box_layer.set_boxes(self.projected_boxes, self._pixmap.boundingRect())
+
     def set_image(self, array, pixels=None, colors=None, point_size=2, opacity=.7):
+        self.set_projected_boxes([])
         image = image_to_qimage(array)
         if pixels is not None and len(pixels):
             painter = QPainter(image)
@@ -183,6 +191,8 @@ class TableModel(QAbstractTableModel):
 
 
 class DataView(QWidget):
+    display_requested = Signal()
+    fusion_requested = Signal()
     color_requested = Signal(str)
     files_dropped = Signal(list)
     cycle_color_requested = Signal()
@@ -191,7 +201,11 @@ class DataView(QWidget):
     cloud_import_requested = Signal()
     next_requested = Signal()
     previous_requested = Signal()
+    play_requested = Signal()
+    first_requested = Signal()
+    last_requested = Signal()
     fps_updated = Signal(float)
+    render_problem = Signal(str)
 
     def __init__(self, theme="dark", viewport_factory=None, parent=None):
         super().__init__(parent)
@@ -200,15 +214,25 @@ class DataView(QWidget):
         self.cloud_view = None
         self.cloud = None
         self.frame = None
+        self._source_key = None
         self._table_value = None
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         toolbar = QHBoxLayout()
+        self.toolbar = toolbar
         self.caption = ElidedLabel("选择数据流")
         toolbar.addWidget(self.caption, 1)
         self.fit = QPushButton("适应")
         self.fit.setToolTip("适应窗口，恢复完整视野")
         self.one_to_one = QPushButton("1:1")
+        self.display_button = QPushButton("颜色")
+        self.display_button.setToolTip("调整此点云的着色方式、色图和字段")
+        self.display_button.clicked.connect(self.display_requested)
+        self.fusion_button = QPushButton("融合")
+        self.fusion_button.setToolTip("标定、点云投影、图像赋色和三维框联动")
+        self.fusion_button.clicked.connect(self.fusion_requested)
+        toolbar.addWidget(self.display_button)
+        toolbar.addWidget(self.fusion_button)
         toolbar.addWidget(self.fit)
         toolbar.addWidget(self.one_to_one)
         layout.addLayout(toolbar)
@@ -222,6 +246,7 @@ class DataView(QWidget):
         self.empty.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.empty.setAlignment(Qt.AlignCenter)
         self.image = ImageView()
+        self._preview_shortcuts(self.image)
         self.text = QPlainTextEdit()
         self.text.setReadOnly(True)
         self.table = QTableView()
@@ -280,10 +305,19 @@ class DataView(QWidget):
         self.set_theme(theme)
         self.clear()
 
+    def compact_header(self):
+        """The recording workspace has source selectors; use one metadata row."""
+        self.caption.hide()
+        self.layout().removeWidget(self.summary)
+        self.toolbar.insertWidget(0, self.summary, 1)
+        self.fit.setMaximumWidth(58)
+        self.one_to_one.setMaximumWidth(48)
+
     def clear(self, message="选择左侧的数据流开始查看"):
         self._filter_timer.stop()
         self.frame = None
         self.cloud = None
+        self.image.set_projected_boxes([])
         if self.cloud_view is not None:
             self.cloud_view.set_entities([])
         self.empty.setText(message)
@@ -294,6 +328,8 @@ class DataView(QWidget):
         self.details_toggle.hide()
         self.details.hide()
         self.fit.hide()
+        self.display_button.hide()
+        self.fusion_button.hide()
         self.one_to_one.hide()
         self.search.hide()
         self.page_bar.hide()
@@ -309,7 +345,13 @@ class DataView(QWidget):
         self.as_cloud.setVisible(numeric_file)
         self.page_bar.setVisible(number > 1 or has_next or numeric_file)
 
-    def show_frame(self, frame, title="", pixels=None, colors=None, point_size=2, opacity=.7):
+    def show_frame(self, frame, title="", pixels=None, colors=None, point_size=2, opacity=.7,
+                   source_key=None):
+        if source_key is not None and source_key != self._source_key:
+            self._cloud_shown = False
+            self._reload_camera_state = None
+            self.image._auto_fit = True
+        self._source_key = source_key
         self.frame = frame
         self.cloud = None
         if frame.kind != "pointcloud" and self.cloud_view is not None:
@@ -317,6 +359,8 @@ class DataView(QWidget):
         self.caption.setText(title)
         self.fit.setVisible(frame.kind in ("image", "pointcloud"))
         self.one_to_one.setVisible(frame.kind == "image")
+        self.display_button.setVisible(frame.kind == "pointcloud")
+        self.fusion_button.setVisible(frame.kind == "image")
         self.search.setVisible(frame.kind not in ("image", "pointcloud"))
         if frame.kind == "image":
             self.image.set_image(frame.value, pixels, colors, point_size, opacity)
@@ -335,7 +379,10 @@ class DataView(QWidget):
                 self.cloud_view.key_next_file.connect(self.next_requested)
                 self.cloud_view.key_prev_file.connect(self.previous_requested)
                 self.cloud_view.fps_updated.connect(self.fps_updated)
+                if hasattr(self.cloud_view, "render_problem"):
+                    self.cloud_view.render_problem.connect(self.render_problem)
                 self.stack.addWidget(self.cloud_view)
+                self._preview_shortcuts(self.cloud_view)
                 from core.model.entities import COLOR_MODES
 
                 for number, mode in enumerate(COLOR_MODES, 1):
@@ -349,7 +396,12 @@ class DataView(QWidget):
             self.cloud_view.set_entities([self.cloud])
             self.stack.setCurrentWidget(self.cloud_view)
             if initial:
-                self.cloud_view.focus_entity(self.cloud)
+                state = getattr(self, "_reload_camera_state", None)
+                if state is not None and hasattr(self.cloud_view, "set_camera_state"):
+                    self.cloud_view.set_camera_state(state)
+                    self._reload_camera_state = None
+                else:
+                    self.cloud_view.focus_entity(self.cloud)
                 self._cloud_shown = True
         elif frame.kind == "table":
             self._table_value = frame.value
@@ -391,6 +443,26 @@ class DataView(QWidget):
         self.details_toggle.setVisible(bool(metadata))
         self.details.setVisible(bool(metadata) and self.details_toggle.isChecked())
         self.set_page_state()
+
+    def _preview_shortcuts(self, widget):
+        for sequence, signal in (("Space", self.play_requested),
+                                 ("Home", self.first_requested), ("End", self.last_requested)):
+            shortcut = QShortcut(QKeySequence(sequence), widget)
+            shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+            shortcut.setAutoRepeat(False)
+            shortcut.activated.connect(signal.emit)
+
+    def rebuild_cloud_view(self):
+        """Release a failed canvas; the next decoded frame creates a fresh one."""
+        view = self.cloud_view
+        if view is None:
+            return
+        self._reload_camera_state = view.camera_state() if hasattr(view, "camera_state") else None
+        self.stack.removeWidget(view)
+        view.stop()
+        view.deleteLater()
+        self.cloud_view = None
+        self._cloud_shown = False
 
     def _fit(self):
         if self.stack.currentWidget() is self.cloud_view:

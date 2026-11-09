@@ -359,6 +359,7 @@ class ScenePanel(QWidget):
     recording_remove_requested = Signal(str)
     recording_options_requested = Signal(str)
     recording_reload_requested = Signal(str)
+    recording_topic_reload_requested = Signal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -671,7 +672,7 @@ class ScenePanel(QWidget):
             selected_ids = set(selected)
             selected_streams = [stream for stream in info.streams if stream.id in selected_ids]
             root = SceneItem(parent, [os.path.basename(info.path),
-                                      f"{info.format} · {len(selected_streams)} 话题"])
+                                      f"{len(selected_streams)} 个数据流"])
             root.setData(0, RECORDING_ROLE, (info.path, None))
             root.setData(0, SEARCH_ROLE, info.path.casefold())
             root.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
@@ -1032,9 +1033,11 @@ class ScenePanel(QWidget):
             menu = QMenu(self)
             self._context_menu_widget = menu
             menu.addAction("查看", lambda: self.recording_selected.emit(recording))
+            if recording[1] is not None:
+                menu.addAction("重新加载此话题", lambda: self.recording_topic_reload_requested.emit(recording))
             menu.addAction("数据包概览 / 重新选择…",
                            lambda: self.recording_options_requested.emit(recording[0]))
-            menu.addAction("重新读取数据源", lambda: self.recording_reload_requested.emit(recording[0]))
+            menu.addAction("重新索引整个数据源", lambda: self.recording_reload_requested.emit(recording[0]))
             menu.addSeparator()
             menu.addAction("打开文件所在文件夹", lambda: self.reveal_source_requested.emit(recording[0]))
             menu.addAction("移出该数据源", lambda: self.recording_remove_requested.emit(recording[0]))

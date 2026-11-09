@@ -1,6 +1,7 @@
 """Interaction regressions for shared data views and point-size controls."""
 
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,10 +10,10 @@ from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QPoint, QPointF, Qt
+from PySide6.QtCore import QCoreApplication, QEvent, QPoint, QPointF, Qt
 from PySide6.QtGui import QWheelEvent
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QDialogButtonBox
+from PySide6.QtWidgets import QApplication, QDialogButtonBox, QLabel, QWidget
 
 from core.io.recording_types import FrameData
 from ui.widgets.data_view import DataView, ImageView
@@ -23,6 +24,28 @@ class UiPolishTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
+
+    def test_status_message_timeout_is_cancelled_when_its_window_is_destroyed(self):
+        from ui.main_window import MainWindow
+
+        class StatusWindow(QWidget):
+            _flash_status = MainWindow._flash_status
+
+            def _mode_status_text(self):
+                return "ready"
+
+        window = StatusWindow()
+        window.status_mode = QLabel(window)
+        window._flash_status("working", 10)
+        QTest.qWait(30)
+        self.assertEqual(window.status_mode.text(), "ready")
+        errors = []
+        with patch.object(sys, "excepthook", lambda *args: errors.append(args)):
+            window._flash_status("closing", 30)
+            window.deleteLater()
+            QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+            QTest.qWait(60)
+        self.assertEqual(errors, [])
 
     def test_filter_coalesces_typing_and_enter_applies_immediately(self):
         view = DataView()

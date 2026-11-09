@@ -34,16 +34,19 @@ class TimestampMatcher:
                 self._timestamps.append(stamp)
                 self._indices.append(frame_index)
 
-    def closest(self, timestamp_ns: int, tolerance_ns: int) -> tuple[int, int] | None:
+    def closest(self, timestamp_ns: int, tolerance_ns: int | None) -> tuple[int, int] | None:
         """Return (original frame index, matched time minus requested time).
 
-        Tolerance is nonnegative and inclusive. All arithmetic uses integers,
+        Tolerance is nonnegative and inclusive; None reports the nearest frame
+        without a cutoff (for navigation and unmatched-frame diagnostics).
+        All arithmetic uses integers,
         preserving single nanoseconds at epoch-sized timestamps.
         """
         timestamp_ns = index(timestamp_ns)
-        tolerance_ns = index(tolerance_ns)
-        if tolerance_ns < 0:
-            raise ValueError("Timestamp tolerance must be nonnegative.")
+        if tolerance_ns is not None:
+            tolerance_ns = index(tolerance_ns)
+            if tolerance_ns < 0:
+                raise ValueError("Timestamp tolerance must be nonnegative.")
         if not self._timestamps:
             return None
         insertion = bisect_left(self._timestamps, timestamp_ns)
@@ -51,6 +54,6 @@ class TimestampMatcher:
         best = min(candidates, key=lambda position: (abs(self._timestamps[position] - timestamp_ns),
                                                     self._timestamps[position]))
         delta = self._timestamps[best] - timestamp_ns
-        if abs(delta) > tolerance_ns:
+        if tolerance_ns is not None and abs(delta) > tolerance_ns:
             return None
         return self._indices[best], delta

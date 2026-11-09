@@ -23,6 +23,7 @@ binaries = [(src, dst) for src, dst in binaries if "torch_ops" not in src]
 
 a = Analysis(
     [str(root / "run.py")], pathex=[str(root)], binaries=binaries, datas=datas,
+    hookspath=[str(root / "packaging" / "hooks")],
     hiddenimports=[
         "wgpu.backends.auto", "wgpu.backends.wgpu_native", "rendercanvas.qt",
         "laspy", "lazrs", "laspy._compression.lazrsbackend", "pye57", "pye57.libe57",

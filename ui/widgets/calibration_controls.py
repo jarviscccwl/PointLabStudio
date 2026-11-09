@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QPlainTextEdit,
@@ -92,16 +93,22 @@ class CalibrationPanel(QWidget):
         self.calibration_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         layout.addWidget(self.calibration_label)
 
-        action_row = QHBoxLayout()
+        action_row = QGridLayout()
         self.undistort = QCheckBox("图像去畸变")
-        self.overlay = QCheckBox("点云投影")
-        action_row.addWidget(self.undistort)
-        action_row.addSpacing(12)
-        action_row.addWidget(self.overlay)
-        action_row.addStretch(1)
+        self.overlay = QCheckBox("点云 → 图像")
+        self.colorize = QCheckBox("图像 → 点云赋色")
+        self.box_overlay = QCheckBox("在图像中显示 3D 框")
+        self.box_overlay.setChecked(True)
+        self.colorize.setToolTip("根据当前匹配图像给已有点云赋 RGB；视野外与被遮挡点保留基础颜色。")
+        self.box_overlay.setToolTip("把当前点云帧的 3D 框同步显示在匹配图像上；实线为人工框，虚线为自动建议。")
+        action_row.addWidget(self.overlay, 0, 0)
+        action_row.addWidget(self.colorize, 0, 1)
+        action_row.addWidget(self.box_overlay, 1, 0)
+        action_row.addWidget(self.undistort, 1, 1)
+        action_row.setColumnStretch(1, 1)
         self.details_button = QPushButton("参数详情…")
         self.details_button.setToolTip("以只读方式查看完整参数、外参方向和单位。")
-        action_row.addWidget(self.details_button)
+        source_actions.insertWidget(3, self.details_button)
         layout.addLayout(action_row)
 
         self.projection_options = QWidget()
@@ -216,6 +223,8 @@ class CalibrationPanel(QWidget):
         )
         projection_ready = bool(has_extrinsics and self._has_image and self._has_cloud)
         self.overlay.setEnabled(projection_ready)
+        self.colorize.setEnabled(projection_ready)
+        self.box_overlay.setEnabled(projection_ready)
         missing = []
         for available, label in ((has_intrinsics, "相机内参"), (has_extrinsics, "雷达 → 相机外参"),
                                  (self._has_image, "当前图像"), (self._has_cloud, "当前点云")):
@@ -223,12 +232,12 @@ class CalibrationPanel(QWidget):
                 missing.append(label)
         hint = "投影待就绪：" + "、".join(missing) if missing else (
             "深度以相机 Z 计，高度以雷达 Z 计，单位均为米；颜色按当前可见点范围显示。"
-            if self.overlay.isChecked() else "勾选“点云投影”后可调整着色、不透明度和点大小。"
+            if self.overlay.isChecked() else "三维框随编辑实时更新；图像赋色仅作用于已有点云，不生成深度。"
         )
         self.overlay.setToolTip(hint)
         self.projection_hint.setText(hint)
         self.projection_options.setVisible(projection_ready and self.overlay.isChecked())
-        self.projection_hint.setVisible(self.overlay.isChecked())
+        self.projection_hint.setVisible(True)
         for control in (self.projection_color, self.projection_opacity, self.projection_size):
             control.setEnabled(projection_ready and self.overlay.isChecked())
         self.set_theme(self._theme)

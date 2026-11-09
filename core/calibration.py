@@ -273,13 +273,16 @@ def calibration_to_dict(calibration: CameraCalibration) -> dict:
 
 
 def project_points(xyz: np.ndarray, calibration: CameraCalibration,
-                   image_size: tuple[int, int] | None = None) -> tuple[np.ndarray, np.ndarray]:
+                   image_size: tuple[int, int] | None = None, *,
+                   clip_to_image: bool = True) -> tuple[np.ndarray, np.ndarray]:
     """Project lidar xyz in metres, returning pixel Nx2 and original row indices.
 
     Requires explicit T_camera_lidar. Filters nonfinite, nonpositive-depth and
     out-of-image results. image_size is (width, height), scaling calibration K
     for a resized image. Uses plumb_bob/rational_polynomial Brown-Conrady or
     equidistant fisheye distortion. Bounds include zero and exclude width/height.
+    ``clip_to_image=False`` retains finite offscreen pixels for clipping lines;
+    nonfinite and nonpositive-depth points are still excluded.
     """
     if calibration.T_camera_lidar is None:
         raise ValueError(
@@ -324,6 +327,8 @@ def project_points(xyz: np.ndarray, calibration: CameraCalibration,
         pixels = np.column_stack((distorted_x, distorted_y, np.ones_like(x))) @ calibration.K.T
         pixels = pixels[:, :2]
         pixels *= [width / calibration.width, height / calibration.height]
-    visible = (np.isfinite(pixels).all(axis=1) & (pixels[:, 0] >= 0) & (pixels[:, 0] < width)
-               & (pixels[:, 1] >= 0) & (pixels[:, 1] < height))
+    visible = np.isfinite(pixels).all(axis=1)
+    if clip_to_image:
+        visible &= ((pixels[:, 0] >= 0) & (pixels[:, 0] < width)
+                    & (pixels[:, 1] >= 0) & (pixels[:, 1] < height))
     return pixels[visible], indices[visible]

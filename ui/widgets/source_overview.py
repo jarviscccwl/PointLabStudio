@@ -16,7 +16,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPlainTextEdit,
-    QProgressBar,
     QPushButton,
     QSizePolicy,
     QSpinBox,
@@ -28,6 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from ui.recording_tasks import RecordingTask
+from ui.widgets.smooth_progress import SmoothProgressBar
 
 KIND_LABELS = {
     "pointcloud": "点云",
@@ -57,6 +57,7 @@ class SourceOverviewDialog(QDialog):
         self.sources = list(sources)
         self._scan = None
         self._reject_pending = False
+        self._time_origin_ns = None
         self.setWindowTitle("数据包概览 · 选择要查看的内容")
         self.resize(900, 620)
         self.setMinimumSize(820, 540)
@@ -196,12 +197,12 @@ class SourceOverviewDialog(QDialog):
             "未识别的数据源会扫描整个文件。PCAP 首次扫描可能需要一些时间。"
         )
         self.scan_button.clicked.connect(self._start_scan)
-        row.addWidget(self.scan_button)
         layout.addLayout(row)
         self.range_hint = QLabel()
         self.range_hint.setObjectName("hint")
+        self.range_hint.setWordWrap(True)
         layout.addWidget(self.range_hint)
-        self.progress = QProgressBar()
+        self.progress = SmoothProgressBar()
         self.progress.setFixedHeight(8)
         self.progress.setTextVisible(False)
         self.progress.hide()
@@ -217,7 +218,11 @@ class SourceOverviewDialog(QDialog):
         self.buttons.button(QDialogButtonBox.Cancel).setText("取消")
         self.buttons.accepted.connect(self.accept)
         self.buttons.rejected.connect(self.reject)
-        layout.addWidget(self.buttons)
+        actions = QHBoxLayout()
+        actions.addWidget(self.scan_button)
+        actions.addStretch(1)
+        actions.addWidget(self.buttons)
+        layout.addLayout(actions)
         self.mode.currentIndexChanged.connect(self._range_visibility)
         self.search.textChanged.connect(self._apply_filter)
         self.kind_filter.currentIndexChanged.connect(self._apply_filter)
@@ -454,11 +459,18 @@ class SourceOverviewDialog(QDialog):
             "frames": "帧号从 1 开始，范围包含起止帧，并分别应用于每个所选数据流。",
             "time": "时间相对于所选数据源中最早的记录时间；没有记录时钟的数据无法按时间筛选。",
         }[mode])
+        if mode == "time" and self._time_origin_ns is not None:
+            self.range_hint.setText(
+                f"时间相对于原导入起点 {time_text(self._time_origin_ns)}；重新选择内容时保持同一时间基准。"
+            )
+        for spin in (self.start_seconds, self.end_seconds):
+            spin.setToolTip(self.range_hint.text() if mode == "time" else "相对于所选数据源中最早的记录时间")
 
     def set_selection(self, selection_dict):
         """Restore available sources and streams using the selection() contract."""
         self._populate(selection_dict.get("sources", {}))
         bounds = selection_dict.get("range", {})
+        self._time_origin_ns = bounds.get("origin_ns")
         mode = self.mode.findData(bounds.get("mode", "all"))
         self.mode.setCurrentIndex(max(0, mode))
         self.first.setValue(bounds.get("first", 0) + 1)
@@ -492,6 +504,7 @@ class SourceOverviewDialog(QDialog):
                 "last": self.last.value() - 1,
                 "start_seconds": self.start_seconds.value(),
                 "end_seconds": self.end_seconds.value(),
+                **({"origin_ns": self._time_origin_ns} if self._time_origin_ns is not None else {}),
             },
         }
 

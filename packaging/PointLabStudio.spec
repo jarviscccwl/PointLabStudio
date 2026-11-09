@@ -67,6 +67,7 @@ for pattern in ("VCRUNTIME140*.dll", "MSVCP140*.dll"):
 a = Analysis(
     [str(root / "run.py")],
     pathex=[str(root)],
+    hookspath=[str(root / "packaging" / "hooks")],
     binaries=binaries,
     datas=datas,
     hiddenimports=[
