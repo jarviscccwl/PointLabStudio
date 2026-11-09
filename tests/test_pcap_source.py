@@ -12,6 +12,29 @@ from core.io import pcap_reader, rs_em4
 from test_lidar_import import eth_udp, msop, difop2, write_pcap, _pcapng_block
 
 
+def test_em4_geometry_matches_independent_polar_formula_for_all_surfaces():
+    import numpy as np
+
+    calibration = rs_em4.Em4Calibration(np.linspace(-30, 30, 520),
+                                      np.linspace(-4, 4, 13), np.array([-2., 1., 3., -1.]))
+    assembler = rs_em4.Em4FrameAssembler(calibration)
+    expected = []
+    for column, yaw in enumerate((-179., -31.23, 0., 132.51)):
+        for part in range(2):
+            assembler.add(msop(column * 2 + part + 1, yaw, surface=column + 1,
+                               radius=60000 - column * 1000))
+        radius = (60000 - column * 1000) * .005
+        rows = np.arange(520)
+        heading = np.deg2rad(yaw + calibration.yaw_offsets[(rows // 20) % 13])
+        pitch = np.deg2rad(calibration.pixel_pitch + calibration.surface_pitch[column])
+        expected.append(np.column_stack((radius * np.cos(pitch) * np.cos(heading),
+                                         radius * np.cos(pitch) * np.sin(heading),
+                                         radius * np.sin(pitch))))
+    frame = assembler.flush()
+    np.testing.assert_allclose(frame.xyz, np.concatenate(expected).astype(np.float32), atol=2e-5, rtol=1e-7)
+    assert np.all(frame.intensity == 7)
+
+
 def source_type():
     from core.io.pcap_source import PcapSource
     return PcapSource

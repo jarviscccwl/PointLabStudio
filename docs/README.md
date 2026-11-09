@@ -1,12 +1,14 @@
 # 文档目录
 
-本轮融合与交互改进已包含在 `dist/PointLabStudio-v2.0.0-Windows-x64.exe`，也可使用项目根目录的 `start.bat` 运行源码。本地 `dist` 仅保留最新 v2.0.0 及其校验文件；GitHub 的 `feature/recording-browser` 分支交付源码，不包含 EXE 和原始采集数据。
+本轮框内提取、关联多帧提取及性能改进已包含在本地 `dist/PointLabStudio-v2.0.0-Windows-x64.exe`，也可使用项目根目录的 `start.bat` 运行源码。GitHub 源码分支已由 `feature/recording-browser` 改名为 `preview`。本地 `dist` 仅保留最新 v2.0.0 及其校验文件；GitHub 不包含 EXE 和原始采集数据。
 
 | 内容 | 文档 |
 | --- | --- |
 | 日常使用、采集包导入、同步查看、标定与目标跟踪 | [主使用说明](../README.md) |
+| 当前帧与关联多帧提取、启动及框编辑性能实测 | [框内提取与性能记录](box-extraction-performance-2026-11-09.md) |
 | 双窗格颜色、图像赋色、三维框投影及流畅度 | [融合浏览与交互优化](fusion-workflow-2026-11-09.md) |
-| 最新 v2.0.0 Windows 成品、校验值、完整回归和源码交付 | [v2.0.0 融合版交付](release-v2.0.0-fusion-2026-11-09.md) |
+| 最新 v2.0.0 Windows 成品、框内提取验收及 preview 源码交付 | [v2.0.0 preview 交付](release-v2.0.0-preview-2026-11-09.md) |
+| 上轮融合版成品、完整回归和源码交付历史 | [v2.0.0 融合版交付](release-v2.0.0-fusion-2026-11-09.md) |
 | 当天较早成品的历史构建与验证记录 | [早期 v2.0.0 本地打包](release-v2.0.0-2026-11-09.md) |
 | 本轮树冠关联失败修复、直接启动与结果查看 | [树木前后帧关联修复](tree-association-repair-2026-11-09.md) |
 | 三维框选、播放恢复、启动动效与验证结果 | [统一 3D 框选与播放恢复](unified-box-workflow-2026-11-09.md) |
@@ -16,4 +18,4 @@
 | 采集包概览、浏览与此前 GitHub 同步验证 | [采集包浏览体验优化](recording-ux-2026-11-08.md) |
 | 表格、主题、参数窗口等此前改进 | [界面与交互优化验证记录](ui-polish-2026-11-08.md) |
 
-历史验证记录保留当时的测试数量和界面状态；当前使用方式以主使用说明为准，最新成品与验证结果以「v2.0.0 融合版交付」为准。设计和实施记录保存在 `superpowers/specs` 与 `superpowers/plans`，不属于运行缓存。启动素材说明见 [资源说明](../resources/startup-art.md)。
+历史验证记录保留当时的测试数量和界面状态；当前源码使用方式以主使用说明为准，现有 EXE 的范围与验证结果以「v2.0.0 preview 交付」为准。设计和实施记录保存在 `superpowers/specs` 与 `superpowers/plans`，不属于运行缓存。启动素材说明见 [资源说明](../resources/startup-art.md)。

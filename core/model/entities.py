@@ -93,8 +93,10 @@ class CloudEntity(_BoundsMixin):
         if self.xyz is None or len(self.xyz) == 0:
             return None
         return (
-            np.asarray(self.xyz.min(axis=0), dtype=np.float64),
-            np.asarray(self.xyz.max(axis=0), dtype=np.float64),
+            # Separate strided reductions avoid the slow Nx3 axis=0 reduction
+            # while preserving exact extrema (including NaN propagation).
+            np.asarray([self.xyz[:, axis].min() for axis in range(3)], dtype=np.float64),
+            np.asarray([self.xyz[:, axis].max() for axis in range(3)], dtype=np.float64),
         )
 
     def extent(self) -> float:

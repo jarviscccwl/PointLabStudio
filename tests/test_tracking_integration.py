@@ -83,6 +83,30 @@ class TrackingIntegrationTests(unittest.TestCase):
         tracking.dialog.close()
         self.assertFalse(self.window.btn_box_select.isChecked())
 
+    def test_extraction_enters_scene_and_supports_undo_redo_and_workspace(self):
+        tracking = self.add_target()
+        tracking.show()
+        before = self.window.recording_browser.current_frames[0].value
+        tracking.dialog.extract_button.click()
+        self.idle()
+        self.assertIs(self.window.content_stack.currentWidget(), self.window.frame_browser)
+        extracted = self.window.scene_panel.current_entity()
+        self.assertIsNot(extracted, before)
+        np.testing.assert_array_equal(extracted.xyz, before.xyz)
+        self.assertIn(extracted, self.window.entities)
+        self.window._undo()
+        self.assertNotIn(extracted, self.window.entities)
+        self.window._redo()
+        self.assertIn(extracted, self.window.entities)
+        self.assertTrue(tracking.has_annotations)
+        project = self.base / "extracted.pls"
+        self.assertTrue(self.window.save_project(str(project)))
+        self.assertTrue(self.window.open_project(str(project)))
+        self.idle()
+        restored = next(entity for entity in self.window.entities if entity.name == extracted.name)
+        np.testing.assert_array_equal(restored.xyz, extracted.xyz)
+        self.assertEqual(restored.info, extracted.info)
+
     def test_visible_association_action_tracks_both_directions_and_browses_results(self):
         tracking = self.add_target()
         self.window.show()

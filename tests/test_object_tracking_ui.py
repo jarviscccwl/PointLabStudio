@@ -109,6 +109,63 @@ def wait_idle(control, app):
     assert not control.busy
 
 
+def test_extract_button_adds_current_box_with_original_frame_identity(controller):
+    control, browser, app = controller
+    select_target(control, browser)
+    control.show()
+    clouds = []
+    control.cloud_extracted.connect(clouds.append)
+    assert control.dialog.extract_button.isEnabled()
+    control.dialog.extract_button.click()
+    wait_idle(control, app)
+    assert len(clouds) == 1
+    result = clouds[0]
+    np.testing.assert_array_equal(result.xyz, browser.current_frames[0].value.xyz)
+    assert "11" in result.name and "record_time_ns=0" in result.info
+    assert browser.entries[0].source.path in result.info
+    assert "可导出" in control._message
+
+
+def test_batch_action_exports_each_observed_frame_without_adding_all_to_scene(controller, tmp_path):
+    import json
+    control, browser, app = controller
+    select_target(control, browser)
+    assert control.start_tracking("forward", 2)
+    wait_idle(control, app)
+    control.show()
+    assert control.dialog.batch_extract_action.isEnabled()
+    clouds = []
+    control.cloud_extracted.connect(clouds.append)
+    assert control.extract_associated(str(tmp_path))
+    wait_idle(control, app)
+    output = next(tmp_path.iterdir())
+    manifest = json.loads((output / "index.json").read_text(encoding="utf-8"))
+    assert [record["frame_index"] for record in manifest["frames"]] == [10, 11, 12]
+    assert not clouds
+    assert str(output) in control._message
+
+
+@pytest.mark.parametrize("state", ["loading", "missing_box", "changed_source", "cancel"])
+def test_extraction_rejects_unready_or_cancelled_results(controller, state):
+    control, browser, app = controller
+    select_target(control, browser)
+    clouds = []
+    control.cloud_extracted.connect(clouds.append)
+    if state == "loading":
+        browser._pending = object()
+    elif state == "missing_box":
+        control.delete_frame()
+    elif state == "changed_source":
+        browser.entries[0].source.token = "changed"
+    if state == "cancel":
+        assert control.extract_current()
+        control.cancel()
+        wait_idle(control, app)
+    else:
+        assert not control.extract_current()
+    assert not clouds
+
+
 def test_selection_creates_manual_original_index_and_reframe_keeps_id(controller):
     control, browser, _ = controller
     track = select_target(control, browser)

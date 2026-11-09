@@ -11,6 +11,7 @@ from PySide6.QtCore import QIODevice, QObject, QSaveFile, Qt, Signal
 from PySide6.QtWidgets import QApplication, QFileDialog
 
 from core.io.recording_types import FrameData
+from core.box_extraction import extract_box, extract_track
 from core.model.entities import CloudEntity
 from core.object_tracking import Box3D, ObjectTrack, Observation, box_corners, fit_box, track_step
 from ui.recording_tasks import RecordingTask
@@ -54,12 +55,15 @@ class ObjectTrackingController(QObject):
     busy_changed = Signal(bool)
     idle = Signal()
     panel_visibility_changed = Signal(bool)
+    cloud_extracted = Signal(object)
 
     def __init__(self, browser):
         super().__init__(browser)
         self.browser = browser
         self.dialog = None
         self.worker = None
+        self.job_label = "关联"
+        self._committed_extraction = None
         self.selected_id = None
         self._streams = {}
         self._entries = {}
@@ -549,6 +553,103 @@ class ObjectTrackingController(QObject):
             self.changed.emit()
             self._refresh()
 
+    def extract_current(self):
+        current, track = self._current(), self._track()
+        if (self.busy or self._armed is not None or self.browser._worker is not None
+                or self.browser._pending is not None or current is None or track is None
+                or current[2] not in track.observations):
+            self._status("请先在已读取的当前帧建立 3D 框，再提取框内点。")
+            return False
+        entry, frame, index = current
+        if not self._source_matches(entry):
+            return False
+        self._disarm()
+        self._generation += 1
+        generation, key = self._generation, self._key(entry)
+        source, token = entry.source, deepcopy(entry.cache_identity)
+        box = deepcopy(track.observations[index].box)
+        name = f"{track.name} · 帧 {index + 1} · 框内点"
+        info = (f"3D 框提取 · {source.path} · {entry.stream.name} · 原始帧 {index + 1}\n"
+                f"timestamp_ns={frame.timestamp_ns}; record_time_ns={frame.record_time_ns}\n"
+                f"box={json.dumps(box.to_dict(), ensure_ascii=False)}")
+
+        def extract(cancel, progress):
+            if source.cache_token() != token:
+                raise ValueError("源文件已更改，请重新载入点云后提取。")
+            cloud = extract_box(frame.value, box, name=name, info=info,
+                                cancel=cancel, progress=progress)
+            return generation, key, source, token, cloud
+
+        self.job_label = "提取"
+        self.worker = RecordingTask(extract, self)
+        self.worker.done.connect(self._apply_extraction)
+        self.worker.failed.connect(self._tracking_error)
+        self.worker.progress.connect(self._tracking_progress)
+        self.worker.finished.connect(self._finished)
+        if self.dialog is not None:
+            self.dialog.progress.setValue(0)
+        self.busy_changed.emit(True)
+        self._status(f"正在提取原始帧 {index + 1} 的框内点…")
+        self._refresh_dialog()
+        self.worker.start()
+        return True
+
+    def _apply_extraction(self, result):
+        generation, key, source, token, cloud = result
+        entry = self._entries.get(key)
+        if (generation != self._generation or entry is None or entry.source is not source
+                or entry.cache_identity != token or not self._source_matches(entry)):
+            return
+        if cloud is None:
+            self._status("当前框内没有有效点，请调整框的位置或尺寸后重试。")
+            return
+        self._status(f"已提取 {cloud.point_count:,} 点并加入场景，可导出或继续处理；可撤销本次添加。")
+        self.cloud_extracted.emit(cloud)
+
+    def extract_associated(self, directory=None):
+        current, track = self._current(), self._track()
+        if (self.busy or self._armed is not None or self.browser._worker is not None
+                or self.browser._pending is not None or current is None or track is None
+                or not track.observations or not self._source_matches(current[0])):
+            self._status("请先选择已读取的点云目标，再批量提取有框帧。")
+            return False
+        self.browser.play.setChecked(False)
+        snapshot = deepcopy(track)
+        entry = current[0]
+        if directory is None:
+            directory = QFileDialog.getExistingDirectory(
+                self.dialog or self.browser, f"选择提取目录 · {len(snapshot.observations)} 个有框帧")
+        if not directory:
+            return False
+        # The directory chooser runs an event loop; revalidate its captured target.
+        if self.busy or self._entry() is not entry or not self._source_matches(entry):
+            return False
+        self._generation += 1
+        self._disarm()
+        token = deepcopy(entry.cache_identity)
+        self._committed_extraction = None
+
+        def extract(cancel, progress):
+            folder = extract_track(entry.source, entry.stream.id, snapshot.observations.values(),
+                                   directory, snapshot.name, token=token, cancel=cancel, progress=progress)
+            # Cancellation after the atomic publish cannot undo a completed export.
+            # Retain its location for _finished even if done is suppressed by QThread.
+            self._committed_extraction = folder
+            return folder
+
+        self.job_label = "批量提取"
+        self.worker = RecordingTask(extract, self)
+        self.worker.failed.connect(self._tracking_error)
+        self.worker.progress.connect(self._tracking_progress)
+        self.worker.finished.connect(self._finished)
+        if self.dialog is not None:
+            self.dialog.progress.setValue(0)
+        self.busy_changed.emit(True)
+        self._status(f"正在逐帧提取「{snapshot.name}」的 {len(snapshot.observations)} 个有框帧…")
+        self._refresh_dialog()
+        self.worker.start()
+        return True
+
     def start_tracking(self, direction="both", count=5, max_distance=2.0):
         current, track = self._current(), self._track()
         if (self.busy or self.browser._worker is not None or self.browser._pending is not None
@@ -566,6 +667,7 @@ class ObjectTrackingController(QObject):
         if not self._source_matches(entry):
             return False
         token = deepcopy(entry.cache_identity)
+        self.job_label = "关联"
         self._disarm()
         self._generation += 1
         generation = self._generation
@@ -680,15 +782,18 @@ class ObjectTrackingController(QObject):
     def _tracking_error(self, message):
         worker = self.worker
         if worker is not None and not worker.isInterruptionRequested():
-            self._status(f"关联停止  {message}")
+            self._status(f"{self.job_label}停止  {message}")
 
     def _finished(self):
         worker = self.worker
         if worker is None or self.sender() is not None and self.sender() is not worker:
             return
         self.worker = None
-        if self._message == "正在取消，等待当前读取结束。":
-            self._status("已取消关联。")
+        if self._committed_extraction is not None:
+            self._status(f"批量提取已完成：{self._committed_extraction}。可打开此文件夹查看各帧点云，时间戳见 index.json。")
+            self._committed_extraction = None
+        elif self._message == "正在取消，等待当前读取结束。":
+            self._status(f"已取消{self.job_label}。")
         worker.deleteLater()
         self.busy_changed.emit(False)
         self._refresh()
@@ -707,7 +812,8 @@ class ObjectTrackingController(QObject):
         self.cancel()
         if self.worker is not None:
             self.worker.wait()
-            self.worker.done.disconnect(self._apply_batch)
+            if self.job_label != "批量提取":
+                self.worker.done.disconnect()
             self.worker.failed.disconnect(self._tracking_error)
             self.worker.finished.disconnect(self._finished)
             self._finished()
@@ -794,6 +900,8 @@ class ObjectTrackingController(QObject):
         dialog.reframe_button.setEnabled(editable and track is not None)
         dialog.apply_button.setEnabled(editable and observation is not None)
         dialog.track_button.setEnabled(editable and observation is not None)
+        dialog.extract_button.setEnabled(editable and track is not None and bool(track.observations))
+        dialog.batch_extract_action.setEnabled(editable and track is not None and bool(track.observations))
         dialog.update_tracking_action()
         dialog.progress.setVisible(self.busy)
         dialog.cancel_button.setVisible(self.busy or self._armed is not None)

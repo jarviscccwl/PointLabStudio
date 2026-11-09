@@ -7,9 +7,10 @@ from __future__ import annotations
 
 from dataclasses import replace
 import math
+import struct
 
 import numpy as np
-from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QByteArray, QDataStream, QEvent, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import QHBoxLayout, QSizePolicy, QWidget
 
@@ -21,6 +22,17 @@ _EDGES = ((0, 1), (1, 2), (2, 3), (3, 0), (4, 5), (5, 6),
           (6, 7), (7, 4), (0, 4), (1, 5), (2, 6), (3, 7))
 _HANDLES = ((-1, -1), (0, -1), (1, -1), (-1, 0), (0, 0),
             (1, 0), (-1, 1), (0, 1), (1, 1))
+
+
+def _point_polygon(pixels):
+    """Batch points through Qt's native stream codec, avoiding N Python wrappers."""
+    # QPolygonF's Qt 6.0 wire format is a uint32 count and pairs of doubles.
+    data = struct.pack(">I", len(pixels)) + np.asarray(pixels, dtype=">f8").tobytes()
+    stream = QDataStream(QByteArray(data))
+    stream.setVersion(QDataStream.Qt_6_0)
+    polygon = QPolygonF()
+    stream >> polygon
+    return polygon
 
 
 def _rotated(box, axis, angle):
@@ -338,7 +350,7 @@ class _BoxView(QWidget):
             pixels = self._project(points)
             for mask, color in ((~inside, palette["text3"]), (inside, palette["success"])):
                 painter.setPen(QPen(QColor(color), 2))
-                painter.drawPoints(QPolygonF([QPointF(float(x), float(y)) for x, y in pixels[mask]]))
+                painter.drawPoints(_point_polygon(pixels[mask]))
         corners = self._project(box_corners(box))
         painter.setPen(QPen(QColor(palette["accent"]), 1.5))
         for first, second in _EDGES:

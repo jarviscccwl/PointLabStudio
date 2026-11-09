@@ -1,8 +1,35 @@
 # 文件整理与手动清理指南
 
-盘点日期：2026-11-09。项目目录为 `C:\Users\lenovo\Desktop\pointlabstudio`。源码、测试、资源、说明已归入对应目录；`dist` 仅保留最新融合版 v2.0.0 EXE 及同名 `.sha256`。旧版 v1.3.0 EXE 已删除，旧 v2.0.0 已被验证后的新成品替换。截图、解码报告和诊断副本位于项目外的聊天可视化目录。
+盘点日期：2026-11-09。项目目录为 `C:\Users\lenovo\Desktop\pointlabstudio`。源码、测试、资源、说明已归入对应目录；`dist` 仅保留包含框内提取与性能优化的最新 v2.0.0 EXE 及同名 `.sha256`。旧版 v1.3.0 EXE 已删除，旧 v2.0.0 已被验证后的新成品替换。截图、解码报告和诊断副本位于项目外的聊天可视化目录。
 
 此前删除过程目录、缓存、诊断副本及验收专用配置的操作被自动审批拒绝，返回 `blocked by policy`，没有提供更具体原因。未重试这些删除，也未换用其他方式绕过。本轮复查时，项目根目录下 `build` 和旧 `.tmp` 均不存在；新成品的构建和验收在项目外进行。
+
+## 最新 preview 版打包：可优先手动清理
+
+最新 EXE 已交付到项目 `dist` 并核对 SHA-256；验收主程序与启动子进程均已退出。运行日志已另存为 `final-exe-ui.log`。以下四个过程目录不参与交付 EXE 运行，共约 **689.72 MiB**，可以手动删除：
+
+| 绝对路径 | 内容 | 大小 |
+| --- | --- | ---: |
+| `C:\Users\lenovo\.codex\visualizations\2026\11\08\01a1b9ba-c0ef-74a2-aab5-1854d236c5cc\release-v2.0.0-preview\build` | 构建中间文件及原生载荷 | 468.61 MiB |
+| `C:\Users\lenovo\.codex\visualizations\2026\11\08\01a1b9ba-c0ef-74a2-aab5-1854d236c5cc\release-v2.0.0-preview\staged` | 已交付成品的验收副本 | 219.18 MiB |
+| `C:\Users\lenovo\.codex\visualizations\2026\11\08\01a1b9ba-c0ef-74a2-aab5-1854d236c5cc\release-v2.0.0-preview\exe-settings` | 验收专用设置和日志 | 0.04 MiB |
+| `C:\Users\lenovo\.codex\visualizations\2026\11\08\01a1b9ba-c0ef-74a2-aab5-1854d236c5cc\release-v2.0.0-preview\exports` | 已核对的当前帧及三帧批量提取副本 | 1.90 MiB |
+
+已核对这些目录的绝对路径和全部子项，均位于本轮验收目录内且没有重解析点。自动审批在命令启动前拒绝了删除，仅返回 `blocked by policy`，未给出更具体原因；因此尚未删除，未重试或换用其他方法绕过。没有重试此前被拒绝的旧目录。
+
+上一级 `release-v2.0.0-preview` 的其他文件是构建、启动、数据核对和 Git 交付记录，可保留复查；不再需要证据时，也可删除整个该目录。其测试工作区只引用 D 盘采集包，删除测试工作区不删除原始数据。正式交付说明见 [v2.0.0 preview 记录](release-v2.0.0-preview-2026-11-09.md)。
+
+## 框内提取与性能优化的源码验证
+
+源码、测试和使用说明已归入项目对应目录。此阶段未生成 EXE；后续打包记录见上节。源码验证的过程文件全部位于：
+
+`C:\Users\lenovo\.codex\visualizations\2026\11\08\01a1b9ba-c0ef-74a2-aab5-1854d236c5cc\box-extraction-performance`
+
+测试窗口已正常退出。该目录共有 **52 个文件、2,361,566 字节（约 2.25 MiB）**，包含临时配置、测试提取的 PCD、诊断脚本以及截图和验证记录，不参与软件运行。**不再需要复查证据时，可手动删除整个 `box-extraction-performance` 目录**；它不包含项目源码、正式 EXE 或 D 盘原始数据。
+
+本轮已先核对删除目标均在此目录内且没有重解析点，再尝试清理临时设置、提取副本和诊断脚本；自动审批在命令启动前拒绝了删除，返回 `blocked by policy`，没有提供更具体原因。因此本轮这些过程文件均尚未删除，也未重试或换方式绕过。
+
+如果希望保留证据，只需留下 `baseline.interactions.json`、`final.interactions.json`、`startup.comparison.json`、`readers.comparison.json`、`native-state.json`、`native-output-verification.json`、`native-extraction.png` 和 `final-regression.log`；其余本轮内容均可手动删除。正式结论已经保存在 [框内提取与性能记录](box-extraction-performance-2026-11-09.md)。以下历史清单继续保留，未重新尝试删除此前被拒绝的项目。
 
 ## 本轮融合版打包：可优先手动清理
 

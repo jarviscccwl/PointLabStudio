@@ -3,7 +3,7 @@ from PySide6.QtCore import QEvent, QPoint, Qt, QTimer
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QDoubleSpinBox, QFormLayout, QFrame, QHBoxLayout, QLabel,
-    QLineEdit, QPushButton, QScrollArea, QSpinBox, QStackedWidget, QToolButton, QVBoxLayout, QWidget,
+    QLineEdit, QMenu, QPushButton, QScrollArea, QSpinBox, QStackedWidget, QToolButton, QVBoxLayout, QWidget,
 )
 from ui.widgets.box_editor import BoxEditor
 from ui.widgets.data_view import ElidedLabel
@@ -159,6 +159,14 @@ class ObjectTrackingDialog(QDialog):
         self.track_button = QPushButton()
         self.track_button.setObjectName("primary")
         self.track_button.setToolTip("从当前帧的 3D 框开始关联；人工框会保留，自动建议需要逐帧检查")
+        self.extract_button = QToolButton()
+        self.extract_button.setText("提取框内点")
+        self.extract_button.setToolTip("点击提取当前帧到场景；右侧箭头可将此目标的所有有框帧分别保存到文件夹")
+        self.extract_button.setPopupMode(QToolButton.MenuButtonPopup)
+        extract_menu = QMenu(self.extract_button)
+        self.batch_extract_action = extract_menu.addAction("批量提取有框帧到文件夹…")
+        self.batch_extract_action.setToolTip("按原始帧分别保存 PCD 和时间戳清单，保留原始点云字段")
+        self.extract_button.setMenu(extract_menu)
         self.cancel_button = QPushButton("取消")
         self.return_button = QPushButton("返回有框帧")
         self.return_button.setToolTip("返回当前目标最近的有框帧，再继续调整或关联")
@@ -175,6 +183,7 @@ class ObjectTrackingDialog(QDialog):
         self.result_frames.setToolTip("当前目标的有框帧；选择一帧查看并修正，帧号为原始帧号")
         self.result_frames.setAccessibleName("有框帧")
         association.addWidget(self.track_button)
+        association.addWidget(self.extract_button)
         association.addWidget(self.cancel_button)
         association.addWidget(self.return_button)
         association.addStretch(1)
@@ -203,6 +212,8 @@ class ObjectTrackingDialog(QDialog):
         self.next_button.clicked.connect(lambda: controller.navigate(1))
         self.track_button.clicked.connect(lambda: controller.start_tracking(
             self.direction.currentData(), self.count.value(), self.max_distance.value()))
+        self.extract_button.clicked.connect(controller.extract_current)
+        self.batch_extract_action.triggered.connect(lambda: controller.extract_associated())
         self.direction.currentIndexChanged.connect(self.update_tracking_action)
         self.count.valueChanged.connect(self.update_tracking_action)
         self.result_previous.clicked.connect(lambda: controller.navigate_result(-1))
@@ -259,7 +270,7 @@ class ObjectTrackingDialog(QDialog):
 
     def update_tracking_action(self):
         if self._controller.busy:
-            self.track_button.setText(f"正在关联 {self.progress.value() // 10}%")
+            self.track_button.setText(f"正在{self._controller.job_label} {self.progress.value() // 10}%")
             return
         direction = self.direction.currentData()
         scope = {"both": "前后各", "forward": "后续", "backward": "之前"}[direction]

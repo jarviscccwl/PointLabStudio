@@ -214,7 +214,10 @@ class AnnotationOverlay:
             bounds = np.asarray(box.size) / 2 + max(max(box.size), 1.) * 1e-7 + 1e-9
             for start in range(0, len(inside), self.CHUNK_POINTS):
                 local = self._local_points[start:start + self.CHUNK_POINTS]
-                inside[start:start + self.CHUNK_POINTS] |= (np.abs(local - center) <= bounds).all(axis=1)
+                matches = np.abs(local[:, 0] - center[0]) <= bounds[0]
+                matches &= np.abs(local[:, 1] - center[1]) <= bounds[1]
+                matches &= np.abs(local[:, 2] - center[2]) <= bounds[2]
+                inside[start:start + self.CHUNK_POINTS] |= matches
         indices = np.flatnonzero(inside)[:self.MAX_HIGHLIGHT_POINTS]
         positions = np.asarray(self._sample_points[indices], dtype=np.float32)
         self._highlight_key = highlight_key

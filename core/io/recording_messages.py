@@ -380,7 +380,7 @@ def compressed_image(msg):
         else:
             if image.mode not in ("L", "RGB", "RGBA"):
                 image = image.convert("RGBA" if "transparency" in image.info else "RGB")
-            array = np.array(image)
+                array = np.array(image)
     metadata["shape"] = list(array.shape)
     return array, metadata
 

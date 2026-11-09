@@ -220,7 +220,7 @@ def test_dense_cloud_alignment_bounds_search_points_and_retains_local_object():
         tree_sizes.append(len(points))
         return cKDTree(points)
 
-    with patch("core.object_tracking.cKDTree", side_effect=real_tree_with_size_record):
+    with patch("scipy.spatial.cKDTree", side_effect=real_tree_with_size_record):
         result = track_step(np.concatenate([previous, background]),
                             np.concatenate([current, background]),
                             Box3D([0, 0, 0.175], [2, 0.9, 1.05], 0))

@@ -33,6 +33,15 @@ def load(editor, box=None, points=None):
     return box, points
 
 
+def test_native_point_polygon_preserves_coordinates_and_empty_input():
+    from ui.widgets.box_editor import _point_polygon
+
+    points = np.array([[1.25, -4.5], [0, 0], [123456.25, -0.125]])
+    polygon = _point_polygon(points[::-1])
+    np.testing.assert_array_equal([[point.x(), point.y()] for point in polygon], points[::-1])
+    assert _point_polygon(np.empty((0, 2))).isEmpty()
+
+
 def test_set_data_is_silent_and_own_echo_keeps_undo(editor):
     box, points = load(editor)
     changes = []

@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+from threading import RLock
 
 import numpy as np
 from PIL import Image
@@ -360,8 +361,28 @@ class McapSource(_CachedSource):
         self._schemas = {}
         self._factories = None
         self._has_chunk_index = False
+        self._read_lock = RLock()
+        self._read_handle = None
+        self._read_reader = None
+
+    def close(self):
+        # The seekable MCAP reader owns one shared file position. Serialize it
+        # with reads, metadata refresh and shutdown, including invalidation.
+        with self._read_lock:
+            if self._read_handle is not None:
+                self._read_handle.close()
+            self._read_handle = self._read_reader = None
+
+    def build_index(self, stream_ids=None, cancel=None, progress=None):
+        with self._read_lock:
+            return super().build_index(stream_ids, cancel, progress)
 
     def inspect(self, cancel=None):
+        with self._read_lock:
+            self.close()
+            return self._inspect(cancel)
+
+    def _inspect(self, cancel=None):
         signature = self._refresh_source(cancel)
         from mcap.reader import make_reader
 
@@ -457,6 +478,17 @@ class McapSource(_CachedSource):
             summary.schemas.update(self._schemas)
         return reader
 
+    def _open_frame_reader(self):
+        if self._read_reader is None:
+            handle = open(self.path, "rb")
+            try:
+                reader = self._make_reader(handle)
+            except BaseException:
+                handle.close()
+                raise
+            self._read_handle, self._read_reader = handle, reader
+        return self._read_reader
+
     def _messages(self, selected):
         topics = list({self._channels[int(sid)].topic for sid in selected})
         with open(self.path, "rb") as handle:
@@ -524,28 +556,31 @@ class McapSource(_CachedSource):
             )
 
     def read_frame(self, stream_id, index, cancel=None):
+        with self._read_lock:
+            return self._read_frame(stream_id, index, cancel)
+
+    def _read_frame(self, stream_id, index, cancel=None):
         ref = self._reference(str(stream_id), index, cancel)
         signature = self._source_signature
         channel = self._channels[int(stream_id)]
         stream = next(s for s in self.info.streams if s.id == str(stream_id))
         ordinal = 0
-        with open(self.path, "rb") as handle:
-            reader = self._make_reader(handle)
-            # SeekingReader consults chunk and message time indexes for this one-ns window.
-            for schema, candidate, message in reader.iter_messages(
-                topics=[channel.topic],
-                starting_at=ref.record_time_ns,
-                ending_before=ref.record_time_ns + 1,
-                log_time_order=self._has_chunk_index,
-            ):
-                check_cancel(cancel)
-                if candidate.id != channel.id:
-                    continue
-                if ordinal == ref.locator["ordinal"]:
-                    result = self._decode(schema, candidate, message, stream)
-                    self._verify_unchanged(signature, cancel)
-                    return result
-                ordinal += 1
+        reader = self._open_frame_reader()
+        # SeekingReader caches the summary and seeks this one-ns window afresh.
+        for schema, candidate, message in reader.iter_messages(
+            topics=[channel.topic],
+            starting_at=ref.record_time_ns,
+            ending_before=ref.record_time_ns + 1,
+            log_time_order=self._has_chunk_index,
+        ):
+            check_cancel(cancel)
+            if candidate.id != channel.id:
+                continue
+            if ordinal == ref.locator["ordinal"]:
+                result = self._decode(schema, candidate, message, stream)
+                self._verify_unchanged(signature, cancel)
+                return result
+            ordinal += 1
         raise ValueError(
             "Indexed MCAP frame could not be found. The source may have changed."
         )

@@ -118,7 +118,10 @@ class PointCloudViewport(RenderCanvas):
         self.setFocusPolicy(Qt.StrongFocus)
 
         self.theme = theme
-        self.renderer = gfx.WgpuRenderer(self)
+        # Render at the screen's physical resolution, with pygfx's anti-aliasing.
+        # Its default supersamples low/medium-DPI screens by 2 in each axis,
+        # multiplying fill and intermediate image traffic during camera motion.
+        self.renderer = gfx.WgpuRenderer(self, pixel_scale=1)
         self.scene = gfx.Scene()
 
         self.camera = gfx.PerspectiveCamera(50, 16 / 9)

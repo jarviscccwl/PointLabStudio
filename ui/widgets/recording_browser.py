@@ -206,6 +206,7 @@ class RecordingBrowser(RecordingChromeMixin, QWidget):
                 shortcut.setContext(Qt.WidgetWithChildrenShortcut)
                 shortcut.activated.connect(callback)
         self.tracking = ObjectTrackingController(self)
+        self.tracking.cloud_extracted.connect(self.cloud_to_scene)
         self.tracking.boxes_changed.connect(self._update_image_boxes)
         self.tracking_button.clicked.connect(self.show_box_editor)
         self.frame_changed.connect(self.tracking.on_frame_changed)

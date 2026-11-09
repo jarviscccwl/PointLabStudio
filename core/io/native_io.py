@@ -4,13 +4,14 @@
 避免 "导出时把伪彩色烘进 RGB、丢掉 intensity" 的数据损坏。
 
 - PLY：binary_little_endian，任意 float 标量属性 + uchar RGB
-- PCD：binary / ascii，支持任意 F 字段，rgb 用打包 float
+- PCD：binary / ascii，保留 F/U/I 类型、精度与 COUNT 向量字段，rgb 用打包 float
 - 文本：首行注释声明列名，后续 x y z + 标量列
 """
 
 from __future__ import annotations
 
 import os
+import io
 from typing import Optional
 
 import numpy as np
@@ -195,41 +196,58 @@ def read_ply(path: str) -> CloudEntity:
 def write_pcd(entity: CloudEntity, path: str) -> None:
     xyz = np.asarray(entity.xyz, dtype=np.float32)
     n = xyz.shape[0]
-    scalars = _scalar_fields(entity)
-    rgb = _rgb01(entity)
-    normals = _normals(entity)
-
-    names = ["x", "y", "z"] + [name for name, _ in scalars]
+    rgb_data, normal_data = entity.field("rgb"), entity.field("normal")
+    rgb = (_rgb01(entity) if rgb_data is not None and np.shape(rgb_data) == (n, 3) else None)
+    normals = (np.asarray(normal_data) if normal_data is not None and np.shape(normal_data) == (n, 3) else None)
+    properties = [(axis, xyz[:, index]) for index, axis in enumerate(("x", "y", "z"))]
+    for name, field in entity.fields.items():
+        if name == "rgb" and rgb is not None or name == "normal" and normals is not None:
+            continue
+        properties.append((name, np.asarray(field.data)))
     if normals is not None:
-        names += ["normal_x", "normal_y", "normal_z"]
+        properties.extend((name, normals[:, index]) for index, name in enumerate(("normal_x", "normal_y", "normal_z")))
     if rgb is not None:
-        names += ["rgb"]
-
+        cols = np.clip(rgb * 255.0 if rgb.max(initial=0.0) <= 1.5 else rgb, 0, 255).astype(np.uint32)
+        packed = (cols[:, 0] << 16) | (cols[:, 1] << 8) | cols[:, 2]
+        properties.append(("rgb", packed.astype(np.uint32).view(np.float32)))
+    names, sizes, types, counts, descriptors = [], [], [], [], []
+    for name, data in properties:
+        if (not name or not name.isascii() or any(char.isspace() for char in name)
+                or "\x00" in name or name in names):
+            raise ValueError(f"PCD 字段名称无效或重复：{name!r}")
+        if data.ndim not in (1, 2) or len(data) != n or data.dtype.kind not in "biuf":
+            raise ValueError(f"PCD 字段必须是每点的数值或数值向量：{name}")
+        count = 1 if data.ndim == 1 else data.shape[1]
+        if count < 1:
+            raise ValueError(f"PCD 字段向量不能为空：{name}")
+        dtype = data.dtype.newbyteorder("<")
+        if dtype.kind == "b":
+            dtype = np.dtype("u1")
+        if dtype.kind == "f" and dtype.itemsize < 4:
+            dtype = np.dtype("<f4")
+        if dtype.itemsize not in (1, 2, 4, 8):
+            raise ValueError(f"PCD 不支持此字段精度：{name}")
+        names.append(name)
+        sizes.append(str(dtype.itemsize))
+        types.append({"f": "F", "u": "U", "i": "I"}[dtype.kind])
+        counts.append(str(count))
+        descriptors.append((name, dtype) if count == 1 else (name, dtype, (count,)))
+    rows = np.empty(n, dtype=descriptors)
+    for name, data in properties:
+        rows[name] = data.reshape(rows[name].shape)
     with open(path, "wb") as f:
         header = [
             "# .PCD v0.7 - Point Cloud Data file format",
             "VERSION 0.7",
             "FIELDS " + " ".join(names),
-            "SIZE " + " ".join("4" for _ in names),
-            "TYPE " + " ".join("F" for _ in names),
-            "COUNT " + " ".join("1" for _ in names),
+            "SIZE " + " ".join(sizes),
+            "TYPE " + " ".join(types),
+            "COUNT " + " ".join(counts),
             f"WIDTH {n}", "HEIGHT 1", "VIEWPOINT 0 0 0 1 0 0 0",
             f"POINTS {n}", "DATA binary",
         ]
         f.write(("\n".join(header) + "\n").encode())
 
-        rows = np.empty((n, len(names)), dtype=np.float32)
-        rows[:, 0:3] = xyz
-        for i, (_, data) in enumerate(scalars):
-            rows[:, 3 + i] = data
-        offset = 3 + len(scalars)
-        if normals is not None:
-            rows[:, offset:offset + 3] = normals[:, :3]
-            offset += 3
-        if rgb is not None:
-            cols = np.clip(rgb * 255.0 if rgb.max(initial=0.0) <= 1.5 else rgb, 0, 255).astype(np.uint32)
-            packed = (cols[:, 0] << 16) | (cols[:, 1] << 8) | cols[:, 2]
-            rows[:, offset] = packed.astype(np.uint32).view(np.float32)
         f.write(rows.tobytes())
 
 
@@ -255,44 +273,37 @@ def read_pcd(path: str) -> CloudEntity:
     types = header.get("TYPE", "F " * len(names)).split()
     counts = [int(v) for v in header.get("COUNT", "1 " * len(names)).split()]
     n = int(header.get("POINTS", "0"))
+    if (not names or len(set(names)) != len(names) or n < 0
+            or not len(names) == len(sizes) == len(types) == len(counts)):
+        raise ValueError("PCD 字段定义不完整或重复")
 
     rows = []
     for name, size, kind, count in zip(names, sizes, types, counts):
-        code = _PCD_TYPES.get(kind.upper(), "f")
-        size = max(size, 4) if code == "f" else size
-        rows.append((name, np.dtype(f"<{code}{size}")))
+        code = _PCD_TYPES.get(kind.upper())
+        if code is None or count < 1 or size not in (1, 2, 4, 8) or code == "f" and size not in (4, 8):
+            raise ValueError("PCD 字段类型、长度或 COUNT 无效")
+        dtype = np.dtype(f"<{code}{size}")
+        rows.append((name, dtype) if count == 1 else (name, dtype, (count,)))
+    dtype = np.dtype(rows)
 
     if fmt == "ascii":
-        with open(path, "r", encoding="utf-8", errors="ignore") as f:
-            started = False
-            values = []
-            for line in f:
-                if not started:
-                    if line.strip().upper().startswith("DATA"):
-                        started = True
-                    continue
-                if line.strip():
-                    values.extend(float(v) for v in line.split())
-        table = np.asarray(values, dtype=np.float64)
-        if table.size % len(names) != 0:
-            raise ValueError("PCD ascii 数据列数不匹配")
-        table = table.reshape(-1, len(names))[: n or None]
-    else:
-        dtype = np.dtype(rows)
+        table = np.loadtxt(io.BytesIO(body), dtype=dtype, ndmin=1)[:n or None]
+    elif fmt == "binary":
         table = np.frombuffer(body[: dtype.itemsize * n], dtype=dtype, count=n)
+    else:
+        raise ValueError(f"PCD 原生读取暂不支持 DATA {fmt}")
 
     index = {name: i for i, name in enumerate(names)}
 
     def get(name: str):
         if name not in index:
             return None
-        if table.dtype.names:
-            return np.asarray(table[name])
-        return table[:, index[name]]
+        return np.asarray(table[name])
 
     xyz = np.stack([get("x"), get("y"), get("z")], axis=1).astype(np.float32)
     fields = {}
-    if get("rgb") is not None:
+    packed_rgb = ("rgb" in index and counts[index["rgb"]] == 1 and sizes[index["rgb"]] == 4)
+    if packed_rgb:
         raw = np.asarray(get("rgb"))
         if raw.dtype == np.float32:
             packed = raw.view(np.uint32)
@@ -301,15 +312,17 @@ def read_pcd(path: str) -> CloudEntity:
         rgb = np.stack([(packed >> 16) & 0xFF, (packed >> 8) & 0xFF, packed & 0xFF], axis=1)
         fields["rgb"] = ScalarField("rgb", rgb.astype(np.float32) / 255.0, kind="color")
 
-    skip = {"x", "y", "z", "rgb", "normal_x", "normal_y", "normal_z"}
+    skip = {"x", "y", "z", "normal_x", "normal_y", "normal_z"}
+    if packed_rgb:
+        skip.add("rgb")
     for name in names:
         if name.lower() in skip:
             continue
-        fields[name] = ScalarField(name, np.asarray(get(name), dtype=np.float32))
+        fields[name] = ScalarField(name, np.array(get(name), copy=True))
 
     if get("normal_x") is not None:
         normals = np.stack([get("normal_x"), get("normal_y"), get("normal_z")], axis=1)
-        fields["normal"] = ScalarField("normal", normals.astype(np.float32), kind="normal")
+        fields["normal"] = ScalarField("normal", normals.copy(), kind="normal")
 
     return _make_entity(os.path.basename(path), path, xyz, fields, f"pcd {fmt}")
 

@@ -26,6 +26,58 @@ def make_mcap(path):
         writer.finish()
 
 
+def test_mcap_reuses_index_reader_and_releases_file_on_close(tmp_path, monkeypatch):
+    from core.io.recording import McapSource
+
+    monkeypatch.setenv("POINTLAB_RECORDING_CACHE", str(tmp_path / "cache"))
+    path = tmp_path / "reuse.mcap"
+    make_mcap(path)
+    source = McapSource(path)
+    source.build_index()
+    handles = []
+    make_reader = source._make_reader
+
+    def observe(handle):
+        handles.append(handle)
+        return make_reader(handle)
+
+    monkeypatch.setattr(source, "_make_reader", observe)
+    sid = source.info.streams[0].id
+    try:
+        assert [source.read_frame(sid, i).value["value"] for i in (2, 0, 1)] == [3, 1, 2]
+        assert len(handles) == 1, "Repeated frame reads must reuse the parsed MCAP summary"
+        source.close()
+        assert all(handle.closed for handle in handles)
+        assert source.read_frame(sid, 0).value == {"value": 1}
+        assert len(handles) == 2
+    finally:
+        source.close()
+
+
+def test_mcap_concurrent_reads_and_close_keep_message_identity(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from core.io.recording import McapSource
+
+    monkeypatch.setenv("POINTLAB_RECORDING_CACHE", str(tmp_path / "cache"))
+    path = tmp_path / "concurrent.mcap"
+    make_mcap(path)
+    source = McapSource(path)
+    source.build_index()
+    sid = source.info.streams[0].id
+
+    def read(index):
+        value = source.read_frame(sid, index).value["value"]
+        source.close()
+        return value
+
+    try:
+        indices = [2, 0, 1] * 8
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            assert list(pool.map(read, indices)) == [index + 1 for index in indices]
+    finally:
+        source.close()
+
+
 def test_mcap_metadata_unknown_decoding_duplicate_timestamp_and_cache(
     tmp_path, monkeypatch
 ):

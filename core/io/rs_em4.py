@@ -296,19 +296,21 @@ class Em4FrameAssembler:
         radius = buffers.radius[index].astype(np.float64) * RADIUS_UNIT_M
         intensity = buffers.intensity[index].astype(np.float32)
         attribute = buffers.attribute[index]
-        yaw = buffers.yaw[index][:, None] + self.calibration.yaw_offsets_for_rows()[None, :]
-        surfaces = buffers.surface[index]
-        pitch_rows = self.calibration.pixel_pitch[None, :]
-        surface_offsets = self.calibration.surface_pitch[np.clip(surfaces - 1, 0,
-                                                                 len(self.calibration.surface_pitch) - 1)]
-        pitch = pitch_rows + surface_offsets[:, None]
-        pitch_rad = np.deg2rad(pitch)
-        yaw_rad = np.deg2rad(yaw)
-        cos_pitch = np.cos(pitch_rad)
+        # Pitch has only four mirror surfaces; yaw is a column angle plus a
+        # calibrated row angle. Evaluate these small tables once, instead of
+        # repeating millions of transcendental operations for every frame.
+        surfaces = np.clip(buffers.surface[index] - 1, 0, len(self.calibration.surface_pitch) - 1)
+        pitch_rad = np.deg2rad(self.calibration.pixel_pitch[None, :]
+                              + self.calibration.surface_pitch[:, None])
+        column_yaw = np.deg2rad(buffers.yaw[index])[:, None]
+        row_yaw = np.deg2rad(self.calibration.yaw_offsets_for_rows())[None, :]
+        cos_column, sin_column = np.cos(column_yaw), np.sin(column_yaw)
+        cos_row, sin_row = np.cos(row_yaw), np.sin(row_yaw)
+        horizontal = radius * np.cos(pitch_rad)[surfaces]
         xyz = np.empty(radius.shape + (3,), dtype=np.float32)
-        xyz[..., 0] = (radius * cos_pitch * np.cos(yaw_rad)).astype(np.float32)
-        xyz[..., 1] = (radius * cos_pitch * np.sin(yaw_rad)).astype(np.float32)
-        xyz[..., 2] = (radius * np.sin(pitch_rad)).astype(np.float32)
+        xyz[..., 0] = horizontal * (cos_column * cos_row - sin_column * sin_row)
+        xyz[..., 1] = horizontal * (sin_column * cos_row + cos_column * sin_row)
+        xyz[..., 2] = radius * np.sin(pitch_rad)[surfaces]
         valid = radius > 0.0
         noise = 0
         if self.drop_noise:

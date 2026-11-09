@@ -13,7 +13,6 @@ import math
 from numbers import Integral, Real
 
 import numpy as np
-from scipy.spatial import cKDTree
 
 
 def _number(value, name):
@@ -248,6 +247,7 @@ def _alignment(template, tree, center, angle, tolerance, cancel):
 
 
 def _match_quality(template, current, tree, center, angle, box, tolerance):
+    from scipy.spatial import cKDTree
     moving = template @ _rotation(angle).T + center
     distances = tree.query(moving, k=1)[0]
     coverage = float(np.mean(distances <= tolerance))
@@ -278,6 +278,10 @@ def track_step(previous_xyz, current_xyz, box, max_distance=2.0, cancel=None):
     at 0.65. Reasons are matched, cancelled, insufficient_previous_points,
     insufficient_current_points, poor_match, or displacement_exceeded.
     """
+    # Geometry, editing and startup do not need the matching engine. Import it
+    # in the tracking job on first use, without delaying the initial workspace.
+    from scipy.spatial import cKDTree
+
     max_distance = _number(max_distance, "max_distance")
     if max_distance < 0:
         raise ValueError("max_distance must be nonnegative")

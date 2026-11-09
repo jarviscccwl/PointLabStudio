@@ -586,6 +586,7 @@ class RecordingSessionMixin:
             return
         self._show_cloud_browser()
         self._add_entity(cloud)
+        self._push_add_history(cloud)
         self._refresh_scene()
 
     def _import_numeric_text(self, path):
