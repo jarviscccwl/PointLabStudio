@@ -39,8 +39,8 @@ from core.i18n import tr
 from core.plugin import load_plugins
 from core.settings import load_settings, save_settings
 from ui.project_session import ProjectSessionMixin
-from ui.recording_session import RecordingSessionMixin
-from core.io.recording import discover_sources, is_data_source
+from ui.recording_session import RecordingSessionMixin, discovery_label
+from core.io.recording import discover_source_inventory, is_data_source
 from core.cancellation import OperationCancelled
 from core.commands import Command, History
 from core.commands.spec import get_spec
@@ -50,7 +50,7 @@ from core.io.auto_ingest import plan_ingest, tier_by_points
 from core.io.lidar_import import import_frames, inspect_source, is_lidar_package
 from core.io.measurements import write_measurements_csv
 from core.io.readers import ReadOptions, read_cloud, read_stream_bin
-from core.io.scanner import collect_files, natural_key
+from core.io.scanner import natural_key
 from core.io.source_ops import move_sources, relocate_path, rename_source
 from core.model.entities import COLOR_MODES, CloudEntity, MeshEntity, ScalarField
 from core.pipeline import run_pipeline
@@ -134,39 +134,28 @@ class LoadThread(QThread):
 class ScanThread(QThread):
     done = Signal(object)
     failed = Signal(str)
+    progress = Signal(object)
 
     def __init__(self, paths, parent=None):
         super().__init__(parent)
         self.paths = paths
 
     def run(self):
-        files = []
-        directories = []
-        data_sources = []
         try:
-            data_sources = discover_sources(self.paths, cancel=self.isInterruptionRequested)
+            inventory = discover_source_inventory(
+                self.paths, cancel=self.isInterruptionRequested, progress=self.progress.emit,
+            )
         except OperationCancelled:
             return
         except Exception as exc:
             self.failed.emit(f"数据源识别失败: {exc}")
-        for path in self.paths:
-            try:
-                files.extend(file for file in collect_files(path, cancel=self.isInterruptionRequested)
-                             if not is_data_source(file))
-                if os.path.isdir(path):
-                    for folder, children, _names in os.walk(path):
-                        if self.isInterruptionRequested():
-                            return
-                        directories.append(folder)
-                        directories.extend(os.path.join(folder, name) for name in children)
-            except OperationCancelled:
-                return
-            except Exception as exc:
-                self.failed.emit(f"收集失败: {path} — {exc}")
+            return
         if not self.isInterruptionRequested():
-            self.done.emit({"files": sorted(set(files), key=natural_key),
-                            "directories": sorted(set(directories), key=natural_key),
-                            "data_sources": data_sources})
+            for error in inventory.errors:
+                self.failed.emit(f"收集失败: {error}")
+            self.done.emit({"files": inventory.files,
+                            "directories": inventory.directories,
+                            "data_sources": inventory.sources})
 
 
 class LidarImportThread(QThread):
@@ -1329,10 +1318,34 @@ class MainWindow(RecordingSessionMixin, ProjectSessionMixin, QMainWindow):
         if any(os.path.isdir(p) for p in paths):
             thread = ScanThread(paths, self)
             self._scan_threads.append(thread)
-            thread.done.connect(self._register_scan)
+            progress = SmoothProgressDialog("正在发现文件…", "取消", 0, 0, self)
+            progress.setWindowTitle("发现文件夹内容")
+            progress.setMinimumDuration(0)
+            progress.setMinimumWidth(400)
+            progress.setAutoClose(False)
+            progress.setAutoReset(False)
+            thread.discovery_progress = progress
+            thread.result_received = False
+
+            def update_discovery(update):
+                if self._closing or progress.wasCanceled():
+                    return
+                label = discovery_label(update)
+                progress.setLabelText(label)
+                self.status_task.setText(label.replace("\n", " · "))
+
+            def cancel_discovery():
+                if not thread.result_received and thread.isRunning():
+                    thread.requestInterruption()
+                    self.status_task.setText("正在取消文件夹发现…")
+
+            progress.canceled.connect(cancel_discovery)
+            thread.progress.connect(update_discovery)
+            thread.done.connect(lambda result, t=thread: self._register_scan(result, t))
             thread.failed.connect(self.log)
             thread.finished.connect(lambda t=thread: self._finish_scan(t))
             self.log("正在扫描文件夹…")
+            progress.show()
             thread.start()
         else:
             self._register_files(paths)
@@ -1340,13 +1353,25 @@ class MainWindow(RecordingSessionMixin, ProjectSessionMixin, QMainWindow):
     def _finish_scan(self, thread):
         if thread in self._scan_threads:
             self._scan_threads.remove(thread)
+        progress = getattr(thread, "discovery_progress", None)
+        if progress is not None:
+            progress.close()
+            progress.deleteLater()
+            if not thread.result_received and not self._closing:
+                self.status_task.setText(
+                    "文件夹发现已取消" if thread.isInterruptionRequested()
+                    else "文件夹发现未完成，请查看日志"
+                )
         thread.deleteLater()
         if not self._scan_threads:
             pending, self._pending_regroups = self._pending_regroups, []
             for paths, destination in pending:
                 self._regroup_sources(paths, destination)
 
-    def _register_scan(self, result):
+    def _register_scan(self, result, thread=None):
+        if thread is not None:
+            thread.result_received = True
+            thread.discovery_progress.close()
         if not self._closing:
             self.scene_panel.add_directories(result["directories"])
             self._register_files(result["files"])
@@ -1354,7 +1379,7 @@ class MainWindow(RecordingSessionMixin, ProjectSessionMixin, QMainWindow):
                 sources = result["data_sources"]
                 prompt = any(os.path.splitext(path)[1].lower() in (".pcap", ".pcapng", ".mcap", ".bag", ".db3")
                              or os.path.isfile(os.path.join(path, "metadata.yaml")) for path in sources)
-                self._open_recording_sources(sources, prompt=prompt)
+                self._open_recording_sources(sources, prompt=prompt, discovered=True)
 
     def _register_files(self, files):
         if self._closing:

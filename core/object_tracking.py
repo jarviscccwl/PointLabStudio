@@ -101,12 +101,16 @@ class ObjectTrack:
     id: str
     name: str
     observations: dict[int, Observation] = field(default_factory=dict)
+    category: str = ""
 
     def __post_init__(self):
         if not isinstance(self.id, str) or not self.id.strip():
             raise ValueError("id must be a nonempty string")
         if not isinstance(self.name, str) or not self.name.strip():
             raise ValueError("name must be a nonempty string")
+        if not isinstance(self.category, str):
+            raise ValueError("category must be a string")
+        self.category = self.category.strip()
         if not isinstance(self.observations, Mapping):
             raise ValueError("observations must map frame indices to observations")
         for index, observation in self.observations.items():
@@ -116,7 +120,7 @@ class ObjectTrack:
         self.observations = dict(self.observations)
 
     def to_dict(self):
-        return {"id": self.id, "name": self.name,
+        return {"id": self.id, "name": self.name, "category": self.category,
                 "observations": [self.observations[index].to_dict()
                                  for index in sorted(self.observations)]}
 
@@ -128,7 +132,7 @@ class ObjectTrack:
             if observation.frame_index in observations:
                 raise ValueError("duplicate observation frame_index")
             observations[observation.frame_index] = observation
-        return cls(value["id"], value["name"], observations)
+        return cls(value["id"], value["name"], observations, value.get("category", ""))
 
 
 @dataclass(frozen=True, slots=True)

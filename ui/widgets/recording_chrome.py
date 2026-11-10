@@ -14,6 +14,7 @@ from ui.theme import get_theme
 from ui.widgets.data_view import DataView, ElidedLabel
 from ui.widgets.calibration_controls import CalibrationPanel
 from ui.widgets.cloud_display_controls import CloudDisplayPanel
+from ui.widgets.frame_range_slider import FrameRangeSlider
 
 
 def tool_button(text, tooltip="", checkable=False):
@@ -48,14 +49,17 @@ class RecordingChromeMixin:
         toolbar_layout = QVBoxLayout(self.toolbar)
         toolbar_layout.setContentsMargins(8, 6, 8, 6)
         row = QHBoxLayout()
+        self._stream_row = row
         toolbar_layout.addLayout(row)
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(8)
         self.primary = stream_combo()
+        self.primary.setAccessibleName("主视图数据流")
         self.primary.setToolTip("主视图 · 也可在左侧场景中选择话题")
         self.compare = tool_button("同步查看", "将另一条数据流与主视图按时间匹配", True)
         self.swap_button = tool_button("⇄", "交换主视图与对照视图")
         self.secondary = stream_combo()
+        self.secondary.setAccessibleName("对照视图数据流")
         self.secondary.setToolTip("对照视图 · 按主视图的时间寻找最接近的帧")
         self.settings_button = tool_button("显示设置", "点云颜色、融合显示与时间匹配", True)
         self.tracking_button = tool_button("3D 框选", "三视图调整三维框，并关联前后帧")
@@ -71,6 +75,7 @@ class RecordingChromeMixin:
         self.more_button.setMenu(menu)
         self.more_button.setPopupMode(QToolButton.InstantPopup)
         primary_label = QLabel("主视图")
+        self._primary_label = primary_label
         primary_label.setBuddy(self.primary)
         row.addWidget(primary_label)
         row.addWidget(self.primary, 1)
@@ -83,6 +88,7 @@ class RecordingChromeMixin:
         comparison.setContentsMargins(0, 0, 0, 0)
         comparison.setSpacing(8)
         secondary_label = QLabel("对照视图")
+        self._secondary_label = secondary_label
         secondary_label.setBuddy(self.secondary)
         primary_label.setMinimumWidth(secondary_label.sizeHint().width())
         comparison.addWidget(secondary_label)
@@ -180,13 +186,36 @@ class RecordingChromeMixin:
 
         self.transport = QFrame()
         self.transport.setObjectName("recordingTransport")
+        self._compact_controls = False
         bottom = QVBoxLayout(self.transport)
         bottom.setContentsMargins(10, 8, 10, 7)
         bottom.setSpacing(5)
-        self.slider = QSlider(Qt.Horizontal)
+        self.slider = FrameRangeSlider(Qt.Horizontal)
         self.slider.setTracking(False)
         self.slider.setToolTip("拖动选择帧，松手后读取；也可输入帧号或按时间定位")
         bottom.addWidget(self.slider)
+        self.range_row = QWidget()
+        range_layout = QHBoxLayout(self.range_row)
+        range_layout.setContentsMargins(0, 0, 0, 0)
+        range_layout.addWidget(QLabel("选区"))
+        self.range_first, self.range_last = QSpinBox(), QSpinBox()
+        for spin, name in ((self.range_first, "起始帧"), (self.range_last, "结束帧")):
+            spin.setRange(1, 1)
+            spin.setKeyboardTracking(False)
+            spin.setAccessibleName(name)
+            spin.setMaximumWidth(100)
+        self.range_count = QLabel()
+        range_layout.addWidget(self.range_first)
+        range_layout.addWidget(QLabel("至"))
+        range_layout.addWidget(self.range_last)
+        range_layout.addWidget(self.range_count)
+        range_layout.addStretch(1)
+        self.range_hint = ElidedLabel("拖动起止手柄选择区间")
+        self.range_hint.setToolTip("拖动时间轴的起止手柄选择导出范围；定位与选区互不影响")
+        self.range_hint.setObjectName("dim")
+        range_layout.addWidget(self.range_hint, 1)
+        self.range_row.hide()
+        bottom.addWidget(self.range_row)
         navigation = QHBoxLayout()
         navigation.setSpacing(6)
         self.first = tool_button("|‹", "首帧（预览中按 Home）")
@@ -213,10 +242,14 @@ class RecordingChromeMixin:
         self.time_label = ElidedLabel()
         self.time_label.setObjectName("dim")
         self.jump_button = tool_button("时间定位", "跳到相对于当前数据流起点的时间")
-        self.export_button = tool_button("导出", "导出当前主视图；菜单中可选择对照视图")
+        self.range_button = tool_button("选择区间", "拖动起止手柄，选择要导出的连续帧", True)
+        self.export_button = tool_button("导出", "导出当前帧或选区：动画、投影画面与点云")
         export_menu = QMenu(self.export_button)
         self.export_primary_action = export_menu.addAction("导出主视图当前内容…")
         self.export_secondary_action = export_menu.addAction("导出对照视图当前内容…")
+        export_menu.addSeparator()
+        self.last_export_action = export_menu.addAction("查看最近导出文件")
+        self.last_export_action.setEnabled(False)
         self.export_button.setMenu(export_menu)
         self.export_button.setPopupMode(QToolButton.MenuButtonPopup)
         for widget in (self.first, self.previous, self.play, self.next, self.last,
@@ -224,6 +257,7 @@ class RecordingChromeMixin:
             navigation.addWidget(widget)
         navigation.addStretch(1)
         navigation.addWidget(self.jump_button)
+        navigation.addWidget(self.range_button)
         navigation.addWidget(self.export_button)
         bottom.addLayout(navigation)
         self.status = ElidedLabel()
@@ -241,6 +275,67 @@ class RecordingChromeMixin:
         layout.addWidget(self.transport)
         self._style_chrome(theme)
 
+    def _update_range_row(self):
+        active = not self.range_button.isHidden() and self.range_button.isChecked()
+        self.range_row.setVisible(active and not self._compact_controls)
+        if active:
+            first, last = self.slider.selection()
+            text = (f"已选第 {first + 1:,} 至 {last + 1:,} 帧，共 {last - first + 1:,} 帧。\n"
+                    "拖动时间轴起止手柄调整；导出窗口中也可输入精确帧号。")
+        else:
+            text = "拖动起止手柄，选择要导出的连续帧"
+        self.range_button.setToolTip(text)
+        self.range_button.setAccessibleDescription(text)
+
+    def set_compact_controls(self, compact):
+        if self._compact_controls == compact:
+            return
+        self._compact_controls = compact
+        toolbar = self.toolbar.layout()
+        if compact:
+            toolbar.removeWidget(self.comparison_row)
+            self._stream_row.insertWidget(2, self.comparison_row, 1)
+        else:
+            self._stream_row.removeWidget(self.comparison_row)
+            toolbar.addWidget(self.comparison_row)
+        self._primary_label.setVisible(not compact)
+        self._secondary_label.setVisible(not compact)
+        toolbar.activate()
+        bottom = self.transport.layout()
+        bottom.setContentsMargins(10, 4 if compact else 8, 10, 4 if compact else 7)
+        bottom.setSpacing(3 if compact else 5)
+        self._update_range_row()
+        bottom.activate()
+        self.layout().activate()
+
+    def fit_compact_controls(self, required_preview_height):
+        """Use the full chrome's height, so collapsing rows cannot oscillate."""
+        bottom = self.transport.layout()
+        heights = []
+        for index in range(bottom.count()):
+            item = bottom.itemAt(index)
+            if item.widget() is self.range_row:
+                if not self.range_button.isHidden() and self.range_button.isChecked():
+                    heights.append(self.range_row.minimumSizeHint().height())
+            elif not item.isEmpty():
+                heights.append(item.minimumSize().height())
+        frame = self.transport.contentsMargins()
+        normal_transport = sum(heights) + 15 + max(0, len(heights) - 1) * 5 + frame.top() + frame.bottom()
+        toolbar = self.toolbar.layout()
+        margins = toolbar.contentsMargins()
+        frame = self.toolbar.contentsMargins()
+        normal_toolbar = (self._stream_row.minimumSize().height() + margins.top() + margins.bottom()
+                          + frame.top() + frame.bottom())
+        if not self.comparison_row.isHidden():
+            normal_toolbar += self.comparison_row.minimumSizeHint().height() + toolbar.spacing()
+        layout = self.layout()
+        margins = layout.contentsMargins()
+        available = (self.height() - normal_toolbar - normal_transport
+                     - 2 * layout.spacing() - margins.top() - margins.bottom())
+        compact = available < required_preview_height
+        self.set_compact_controls(compact)
+        return compact
+
     def _style_chrome(self, theme):
         colors = get_theme(theme)
         self.setStyleSheet(f"""
@@ -253,3 +348,4 @@ class RecordingChromeMixin:
             }}
         """)
         self.calibration_panel.set_theme(theme)
+        self.slider.set_theme(theme)

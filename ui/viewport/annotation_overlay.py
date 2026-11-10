@@ -86,6 +86,7 @@ class AnnotationOverlay:
             try:
                 center, size, yaw = _box_geometry(box)
                 valid.append({"id": str(box["id"]), "name": str(box.get("name", "")),
+                              "category": str(box.get("category", "")),
                               "center": center.tolist(), "size": size.tolist(), "yaw": yaw,
                               "roll": float(box.get("roll", 0.0)),
                               "pitch": float(box.get("pitch", 0.0)),
@@ -124,7 +125,7 @@ class AnnotationOverlay:
                 self.labels.append(label)
             state = "人工" if box["manual"] else "自动建议"
             name = f" · {box['name']}" if box["name"] else ""
-            text = f"{box['id']}{name} · {state}"
+            text = f"{box['category'] or '未分类'} · {box['id']}{name} · {state}"
             if label.text() != text:
                 label.setText(text)
                 label.adjustSize()

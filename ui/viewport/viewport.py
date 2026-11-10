@@ -273,6 +273,17 @@ class PointCloudViewport(RenderCanvas):
                 pass
 
     # ---------------- 渲染循环 ----------------
+    def snapshot_rgb(self):
+        """Capture a fresh rendered view on the GUI thread, preserving the camera."""
+        if not self._running or min(self.get_physical_size()) <= 0:
+            raise ValueError("点云视图尚未就绪，请打开预览后再导出")
+        self._annotation_overlay.update_labels()
+        self.renderer.render(self.scene, self.camera)
+        pixels = np.asarray(self.renderer.snapshot())
+        if pixels.ndim != 3 or pixels.shape[2] < 3:
+            raise RuntimeError("无法获取当前点云画面")
+        return np.ascontiguousarray(pixels[..., :3])
+
     def stop(self):
         """停止渲染循环（关闭前调用，避免画布销毁后 wgpu 回调仍触发）。"""
         if not self._running:
@@ -516,6 +527,9 @@ class PointCloudViewport(RenderCanvas):
 
     # ---------------- 数据刷新 ----------------
     def set_entities(self, entities: list):
+        # Screen selection owns copied points, separate from the cloud render
+        # cache and annotation highlight. They belong only to the old frame.
+        self.clear_selection_runtime()
         self._annotation_overlay.clear()
         self.entities = list(entities)
         self._proj_cache.clear()
@@ -524,7 +538,7 @@ class PointCloudViewport(RenderCanvas):
     def set_annotation_boxes(self, boxes: list[dict]):
         """Show source-coordinate boxes for this frame, separate from screen selection.
 
-        Each dictionary contains id, name, center XYZ, size length/width/height,
+        Each dictionary contains id, name, category, center XYZ, size length/width/height,
         yaw in radians, selected and manual. Reapply after set_entities().
         """
         if self._running:

@@ -1,14 +1,12 @@
 """Non-destructive full-resolution extraction in the source coordinate system."""
 from dataclasses import replace
-import json
 from pathlib import Path
-import re
+import shutil
 import tempfile
-from uuid import uuid4
 
 import numpy as np
 
-from core.cancellation import check_cancel
+from core.cancellation import OperationCancelled, check_cancel
 from core.object_tracking import points_in_box
 
 
@@ -38,51 +36,67 @@ def extract_box(source, box, *, name=None, info="", cancel=None, progress=None):
     return result
 
 
-def extract_track(source, stream_id, observations, directory, name, *, token=None,
-                  cancel=None, progress=None):
-    """Write one PCD per observation, publishing a complete folder atomically."""
+def track_output_paths(target, observations):
+    """A user-selected filename, with original frame numbers for a sequence."""
+    target = Path(target).absolute()
+    if target.suffix.lower() not in (".pcd", ".ply"):
+        raise ValueError("请选择 PCD 或 PLY 文件。")
+    indices = sorted(observation.frame_index for observation in observations)
+    if not indices or len(set(indices)) != len(indices):
+        raise ValueError("请选择有效且不重复的有框帧。")
+    return tuple(target if len(indices) == 1 else target.with_name(
+        f"{target.stem}_{index + 1:06d}{target.suffix.lower()}") for index in indices)
+
+
+def extract_track(source, stream_id, observations, target, name, *, token=None,
+                  cancel=None, progress=None, overwrite=False):
+    """Publish only named cloud files; empty boxes do not produce files."""
     from core.io.exporters import export_entity
     from core.io.recording_types import FrameData
+    from core.sequence_export import ExportRollbackError, publish_export_files
 
     observations = sorted(observations, key=lambda observation: observation.frame_index)
     if not observations:
         raise ValueError("当前目标没有可提取的框。")
-    parent = Path(directory).resolve(strict=True)
-    safe_name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name).strip(". ")[:40] or "target"
-    output = parent / f"target-{safe_name}-{uuid4().hex[:8]}"
-    records = []
+    paths = track_output_paths(target, observations)
+    parent = paths[0].parent.resolve(strict=True)
+    for path in paths:
+        if path.exists() and (not overwrite or not path.is_file()):
+            raise FileExistsError(f"文件已存在：{path}")
+    output = []
 
     def checkpoint():
         check_cancel(cancel)
         if source.cache_token() != token:
             raise ValueError("源文件已更改，未保存本次批量提取结果。")
 
-    with tempfile.TemporaryDirectory(prefix=".pointlab-extract-", dir=parent) as temporary:
-        staging = Path(temporary)
-        for position, observation in enumerate(observations):
+    staging = Path(tempfile.mkdtemp(prefix=".pointlab-extract-", dir=parent))
+    keep_recovery = False
+    try:
+        for position, (observation, path) in enumerate(zip(observations, paths)):
             checkpoint()
             index = observation.frame_index
             frame = source.read_frame(stream_id, index, cancel=cancel)
             if not isinstance(frame, FrameData) or frame.kind != "pointcloud":
                 raise ValueError(f"原始帧 {index + 1} 没有可提取的点云。")
-            cloud = extract_box(frame.value, observation.box, cancel=cancel)
-            record = {"frame_index": index, "frame_number": index + 1,
-                      "timestamp_ns": frame.timestamp_ns, "record_time_ns": frame.record_time_ns,
-                      "manual": observation.manual, "box": observation.box.to_dict(),
-                      "point_count": 0 if cloud is None else cloud.point_count, "file": None}
+            cloud = extract_box(frame.value, observation.box, name=name, cancel=cancel)
             if cloud is not None:
-                stamp = frame.timestamp_ns if frame.timestamp_ns is not None else frame.record_time_ns
-                record["file"] = f"frame_{index + 1:06d}_{stamp if stamp is not None else 'unknown'}.pcd"
-                export_entity(cloud, str(staging / record["file"]))
-            records.append(record)
+                export_entity(cloud, str(staging / path.name))
+                output.append(path)
+            elif path.exists():
+                raise ValueError(f"原始帧 {index + 1} 是空框，但已有同名文件 {path.name}。"
+                                 "本次未保存，请使用新名称或调整此帧的框。")
             if progress:
                 progress((position + 1) / len(observations) * .99)
         checkpoint()
-        manifest = {"target": name, "source": str(source.path), "stream_id": stream_id,
-                    "coordinate_system": "source", "frames": records}
-        (staging / "index.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-        checkpoint()
-        staging.replace(output)
+        if output and not publish_export_files(staging, output, overwrite=overwrite, cancelled=cancel):
+            raise OperationCancelled()
+    except ExportRollbackError:
+        keep_recovery = True
+        raise
+    finally:
+        if not keep_recovery:
+            shutil.rmtree(staging)
     if progress:
         progress(1.)
-    return output
+    return tuple(output)

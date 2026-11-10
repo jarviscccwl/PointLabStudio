@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import numpy as np
 from PySide6.QtWidgets import QApplication, QDialog
-from PySide6.QtCore import QSize, Qt
+from PySide6.QtCore import QPoint, QSize, Qt
 from PySide6.QtTest import QTest
 
 from recording_fixtures import write_sensor_mcap
@@ -237,6 +237,7 @@ class TrackingIntegrationTests(unittest.TestCase):
                 if width == 1280:
                     total = sum(browser.box_splitter.sizes())
                     browser.box_splitter.setSizes([total - 310, 310])
+                    browser.box_splitter.splitterMoved.emit(total - 310, 1)
                     manual_sizes = browser.box_splitter.sizes()
                     dialog._fit_host_layout()
                     self.assertEqual(browser.box_splitter.sizes(), manual_sizes)
@@ -286,6 +287,88 @@ class TrackingIntegrationTests(unittest.TestCase):
                 self.assertFalse(dialog._settings_window.isVisible())
                 self.assertGreaterEqual(browser.panes.height(), preview_height - 1)
                 self.assertEqual(browser.panes.minimumHeight(), 165)
+
+    def test_box_editor_with_export_range_preserves_a_readable_main_preview(self):
+        self._check_default_preview_with_export_range(True)
+
+    def test_opening_range_after_editor_preserves_a_readable_main_preview(self):
+        self._check_default_preview_with_export_range(False)
+
+    def test_short_workspace_with_export_range_keeps_three_views_and_actions_visible(self):
+        self._check_default_preview_with_export_range(True, (980, 620), 48)
+
+    def test_closing_comparison_restores_range_inputs_when_space_is_available(self):
+        browser, _ = self._check_default_preview_with_export_range(True)
+        self.window.resize(1024, 650)
+        QTest.qWait(60)
+        self.assertTrue(browser.range_row.isHidden())
+        browser.compare.setChecked(False)
+        self.idle()
+        QTest.qWait(60)
+        self.assertTrue(browser.range_row.isVisible())
+        self.assertEqual(browser.slider.selection(), (1, 2))
+
+    def _check_default_preview_with_export_range(self, range_first, size=(1280, 820), minimum=170):
+        path = self.base / "preview-layout.mcap"
+        write_sensor_mcap(path, clouds=self.clouds,
+                          images=[(stamp, np.full((180, 320, 3), 90, np.uint8)) for stamp, _ in self.clouds])
+        self.window._open_recording_sources([str(path)], prompt=False)
+        self.idle()
+        browser = self.window.recording_browser
+        for combo, kind in ((browser.primary, "pointcloud"), (browser.secondary, "image")):
+            combo.setCurrentIndex(next(i for i in range(combo.count())
+                if (entry := browser.entry(combo.itemData(i))) is not None
+                and entry.source.path == str(path) and entry.stream.kind == kind))
+        browser.compare.setChecked(True)
+        self.idle()
+        tracking = self.add_target()
+        self.window.resize(*size)
+        browser.range_button.setChecked(range_first)
+        browser.slider.setSelection(1, 2)
+        self.window.show()
+        self.app.processEvents()
+        tracking.show()
+        QTest.qWait(60)
+        if not range_first:
+            browser.range_button.setChecked(True)
+            QTest.qWait(60)
+        geometry = (browser.box_splitter.sizes(), tracking.dialog.editor.size(),
+                    browser.left.cloud_view.height(), tracking.dialog.layout().minimumSize().height(),
+                    browser.range_row.sizeHint().height(), tracking.dialog.status.sizeHint().height())
+        self.assertEqual(self.window.size(), QSize(*size))
+        self.assertGreaterEqual(browser.left.cloud_view.height(), minimum, geometry)
+        self.assertGreaterEqual(browser.right.image.viewport().height(), minimum, geometry)
+        for widget in (*tracking.dialog.editor.views.values(), tracking.dialog.track_button,
+                       tracking.dialog.result_frames, browser.export_button):
+            self.assertTrue(widget.visibleRegion().boundingRect().contains(widget.rect()), geometry)
+        self.assertLess(tracking.dialog.editor.geometry().bottom(),
+                        tracking.dialog.track_button.mapTo(tracking.dialog, QPoint()).y(), geometry)
+        view = tracking.dialog.editor.views["top"]
+        view.setFocus()
+        QTest.keyClick(view, Qt.Key_D)
+        self.assertTrue(tracking.navigate(1))
+        self.idle()
+        self.assertTrue(tracking.navigate(-1))
+        self.idle()
+        QTest.qWait(60)
+        self.assertLess(tracking.dialog.editor.geometry().bottom(),
+                        tracking.dialog.track_button.mapTo(tracking.dialog, QPoint()).y(), geometry)
+        self.assertEqual(browser.slider.selection(), (1, 2))
+        self.window.resize(1280, 820)
+        QTest.qWait(60)
+        self.assertTrue(browser.range_row.isVisible())
+        self.assertEqual((browser.range_first.value(), browser.range_last.value()), (2, 3))
+
+        # Opening the range after the editor must re-balance the default layout.
+        tracking.dialog.close()
+        browser.range_button.setChecked(False)
+        tracking.show()
+        QTest.qWait(60)
+        browser.range_button.setChecked(True)
+        QTest.qWait(60)
+        self.assertGreaterEqual(browser.left.cloud_view.height(), 170,
+                                (browser.box_splitter.sizes(), tracking.dialog.editor.size()))
+        return browser, tracking
 
     def test_box_undo_shortcut_is_local_inside_main_window(self):
         tracking = self.add_target()
@@ -472,6 +555,118 @@ class TrackingIntegrationTests(unittest.TestCase):
         self.assertEqual(browser._displayed_indices[0], 2)
         observations = tracking.source_state(str(self.path))["streams"][0]["tracks"][0]["observations"]
         self.assertEqual([item["frame_index"] for item in observations], [1])
+
+    def test_background_preload_keeps_current_box_editable_and_navigation_serial(self):
+        from core.cancellation import check_cancel
+
+        tracking = self.add_target()
+        browser = self.window.recording_browser
+        browser._schedule_prefetch = lambda: None
+        browser._prefetch_timer.stop()
+        self.window.show()
+        source = browser.entry(browser.primary.currentData()).source
+        read_frame = source.read_frame
+        entered, release = threading.Event(), threading.Event()
+        active = [0, 0]
+
+        def read(stream_id, index, cancel=None):
+            active[0] += 1
+            active[1] = max(active[1], active[0])
+            try:
+                if index == 3:
+                    entered.set()
+                    while not release.is_set():
+                        check_cancel(cancel)
+                        time.sleep(.002)
+                return read_frame(stream_id, index, cancel)
+            finally:
+                active[0] -= 1
+
+        try:
+            with patch.object(source, "read_frame", read):
+                browser._start_read(prefetch_position=3)
+                wait_for(self.app, entered.is_set)
+                tracking.show()
+                self.app.processEvents()
+                dialog = tracking.dialog
+                self.assertTrue(dialog.editor.isEnabled())
+                self.assertTrue(dialog.focus_button.isEnabled())
+                self.assertFalse(dialog.track_button.isEnabled())
+                old = tracking._track().observations[1].box
+                view = dialog.editor.views["top"]
+                view.setFocus()
+                QTest.keyClick(view, Qt.Key_D)
+                self.assertNotEqual(tracking._track().observations[1].box, old)
+                self.assertTrue(tracking.focus_target())
+                self.assertTrue(tracking.navigate(1))
+                self.idle()
+                self.assertEqual(browser._displayed_indices[0], 2)
+                self.assertEqual(active[1], 1)
+                self.assertTrue(tracking.navigate(-1))
+                self.idle()
+                self.assertTrue(dialog.track_button.isEnabled())
+        finally:
+            release.set()
+            self.idle()
+
+    def test_returning_to_prepared_frame_remains_editable_after_old_read_is_cancelled(self):
+        from core.cancellation import check_cancel
+
+        tracking = self.add_target()
+        browser = self.window.recording_browser
+        browser._schedule_prefetch = lambda: None
+        browser._prefetch_timer.stop()
+        self.window.show()
+        tracking.show()
+        source = browser.entry(browser.primary.currentData()).source
+        read_frame = source.read_frame
+        entered, release = threading.Event(), threading.Event()
+
+        def read(stream_id, index, cancel=None):
+            if index == 3:
+                entered.set()
+                while not release.is_set():
+                    check_cancel(cancel)
+                    time.sleep(.002)
+            return read_frame(stream_id, index, cancel)
+
+        try:
+            with patch.object(source, "read_frame", read):
+                browser.position.setValue(4)
+                wait_for(self.app, entered.is_set)
+                hits = browser._prepared_hits
+                browser.position.setValue(2)
+                self.assertGreater(browser._prepared_hits, hits)
+                self.idle()
+                self.assertTrue(tracking.dialog.editor.isEnabled())
+                self.assertTrue(tracking.dialog.focus_button.isEnabled())
+                self.assertTrue(tracking.dialog.track_button.isEnabled())
+                old = tracking._track().observations[1].box
+                view = tracking.dialog.editor.views["top"]
+                view.setFocus()
+                QTest.keyClick(view, Qt.Key_D)
+                self.assertNotEqual(tracking._track().observations[1].box, old)
+        finally:
+            release.set()
+            self.idle()
+
+    def test_batch_naming_dialog_holds_neighbor_reads_until_job_starts(self):
+        tracking = self.add_target()
+        browser = self.window.recording_browser
+        browser._prefetch_timer.stop()
+        self.window.show()
+        tracking.show()
+        destination = self.base / "named-target.pcd"
+
+        def choose(*args, **kwargs):
+            browser._start_prefetch(force=True)
+            self.assertIsNone(browser._worker)
+            return str(destination), "PCD 点云 (*.pcd)"
+
+        with patch('ui.widgets.object_tracking.QFileDialog.getSaveFileName', side_effect=choose):
+            self.assertTrue(tracking.extract_associated())
+        self.idle()
+        self.assertTrue(destination.is_file())
 
     def _check_offline_annotations_survive_save(self, include_available_source):
         tracking = self.add_target()

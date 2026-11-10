@@ -58,9 +58,11 @@ class SourceOverviewDialog(QDialog):
         self._scan = None
         self._reject_pending = False
         self._time_origin_ns = None
+        self._filter_expansion = None
+        self._scan_error = None
         self.setWindowTitle("数据包概览 · 选择要查看的内容")
-        self.resize(900, 620)
-        self.setMinimumSize(820, 540)
+        self.resize(900, 600)
+        self.setMinimumSize(720, 500)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(10)
@@ -71,8 +73,15 @@ class SourceOverviewDialog(QDialog):
         heading.addStretch(1)
         self.summary = QLabel()
         self.summary.setObjectName("dim")
+        self.summary.setWordWrap(False)
+        self.summary.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         heading.addWidget(self.summary)
         layout.addLayout(heading)
+        self.kind_summary = QLabel()
+        self.kind_summary.setObjectName("dim")
+        self.kind_summary.setWordWrap(True)
+        self.kind_summary.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        layout.addWidget(self.kind_summary)
 
         filters = QHBoxLayout()
         self.search = QLineEdit()
@@ -235,6 +244,11 @@ class SourceOverviewDialog(QDialog):
         current = self.tree.currentItem()
         current_key = current.data(0, Qt.UserRole) if current else None
         current_item = None
+        expanded = {
+            self.tree.topLevelItem(index).data(0, Qt.UserRole)[0].path:
+            self.tree.topLevelItem(index).isExpanded()
+            for index in range(self.tree.topLevelItemCount())
+        }
         duplicate_names = Counter(os.path.basename(source.path) for source in self.sources)
         with QSignalBlocker(self.tree):
             self.tree.clear()
@@ -247,6 +261,10 @@ class SourceOverviewDialog(QDialog):
                 root.setData(0, Qt.UserRole, (source, None))
                 root.setToolTip(0, info.path)
                 root.setFlags(root.flags() | Qt.ItemIsUserCheckable)
+                font = root.font(0)
+                font.setBold(True)
+                root.setFont(0, font)
+                root.setTextAlignment(2, Qt.AlignRight | Qt.AlignVCenter)
                 root.setToolTip(1, "勾选文件可选择其全部数据流，包括筛选外的内容。")
                 if current_key == (source, None):
                     current_item = root
@@ -270,6 +288,7 @@ class SourceOverviewDialog(QDialog):
                         source.path, info.format, stream.id, stream.name, stream.message_type
                     )).casefold())
                     item.setData(1, Qt.UserRole, stream.kind)
+                    item.setTextAlignment(2, Qt.AlignRight | Qt.AlignVCenter)
                     item.setToolTip(0, f"{stream.name}\n{stream.message_type}\n{source.path}")
                     item.setToolTip(1, stream.message_type)
                     item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
@@ -280,13 +299,29 @@ class SourceOverviewDialog(QDialog):
                     item.setCheckState(0, Qt.Checked if selected else Qt.Unchecked)
                     if current_key == (source, stream.id):
                         current_item = item
-                root.setExpanded(True)
+                root.setExpanded(expanded.get(source.path, len(self.sources) <= 8))
             self._sync_roots()
         size = sum(source.info.size_bytes for source in self.sources)
         streams = sum(len(source.info.streams) for source in self.sources)
         self.summary.setText(
             f"{len(self.sources)} 个数据源 · {streams} 个数据流 · {size / 1024**2:,.1f} MiB"
         )
+        kinds = {}
+        for source in self.sources:
+            for stream in source.info.streams:
+                counts = kinds.setdefault(stream.kind, [0, 0, 0])
+                counts[0] += 1
+                counts[1] += stream.count or 0
+                counts[2] += stream.count is None
+        parts = []
+        for kind, (count, records, pending) in kinds.items():
+            unit = "帧" if kind in ("pointcloud", "image") else "条"
+            part = f"{KIND_LABELS.get(kind, '消息')} {count} 流 · "
+            part += f"{'已知 ' if pending else ''}{records:,} {unit}"
+            if pending:
+                part += f"（{pending} 个待统计）"
+            parts.append(part)
+        self.kind_summary.setText("    ".join(parts) if parts else "尚未识别数据种类，可先统计帧数。")
         self._apply_filter()
         if current_item is not None and not current_item.isHidden():
             self.tree.setCurrentItem(current_item)
@@ -319,6 +354,13 @@ class SourceOverviewDialog(QDialog):
     def _apply_filter(self):
         query = self.search.text().strip().casefold()
         kind = self.kind_filter.currentData()
+        filtering = bool(query or kind)
+        if filtering and self._filter_expansion is None:
+            self._filter_expansion = {
+                self.tree.topLevelItem(index).data(0, Qt.UserRole)[0].path:
+                self.tree.topLevelItem(index).isExpanded()
+                for index in range(self.tree.topLevelItemCount())
+            }
         first_visible = None
         for index in range(self.tree.topLevelItemCount()):
             root = self.tree.topLevelItem(index)
@@ -335,8 +377,14 @@ class SourceOverviewDialog(QDialog):
                 not kind and (not query or query in f"{source.path} {source.info.format}".casefold())
             )
             root.setHidden(not visible)
+            if filtering and visible:
+                root.setExpanded(True)
+            elif not filtering and self._filter_expansion is not None:
+                root.setExpanded(self._filter_expansion.get(source.path, len(self.sources) <= 8))
             if visible and first_visible is None:
                 first_visible = root
+        if not filtering:
+            self._filter_expansion = None
         current = self.tree.currentItem()
         if current is None or current.isHidden() or (
             current.parent() is not None and current.parent().isHidden()
@@ -526,6 +574,8 @@ class SourceOverviewDialog(QDialog):
     def _start_scan(self):
         if self._scan is not None:
             self._scan.requestInterruption()
+            self.scan_button.setEnabled(False)
+            self._set_status("正在取消统计，已完成的索引会保留。")
             return
         chosen = self._checked_sources(include_unknown=True)
         sources = [source for source in self.sources if source.path in chosen]
@@ -533,10 +583,16 @@ class SourceOverviewDialog(QDialog):
             self._set_status("请先勾选需要统计的数据流或未识别的文件。")
             return
 
-        def scan(cancel, progress):
+        def scan(cancel, progress, detail):
             for index, source in enumerate(sources):
                 if cancel():
                     return
+                ids = chosen[source.path]
+                known_count = bool(source.info.streams) and all(
+                    stream.count is not None for stream in source.info.streams
+                    if ids is None or stream.id in ids
+                )
+                detail((index + 1, len(sources), source.path, known_count))
                 source.build_index(
                     chosen[source.path],
                     cancel=cancel,
@@ -546,12 +602,15 @@ class SourceOverviewDialog(QDialog):
                 )
             return chosen
 
-        self._scan = RecordingTask(scan, self)
+        self._scan_error = None
+        self._scan = RecordingTask(scan, self, detailed=True)
         self._scan.done.connect(lambda checked: self._populate(checked))
-        self._scan.failed.connect(self._set_status)
+        self._scan.failed.connect(self._scan_failed)
         self._scan.progress.connect(
             lambda value: self.progress.setValue(round(value * 100))
+            if self.progress.maximum() else None
         )
+        self._scan.progress_detail.connect(self._scan_detail)
         self._scan.finished.connect(self._scan_finished)
         self.buttons.button(QDialogButtonBox.Ok).setEnabled(False)
         self.tree.setEnabled(False)
@@ -565,6 +624,20 @@ class SourceOverviewDialog(QDialog):
         self._set_status("正在建立索引…")
         self._scan.start()
 
+    def _scan_detail(self, update):
+        if self._scan is None or self._scan.isInterruptionRequested():
+            return
+        current, total, path, known_count = update
+        self.progress.setRange(0, 100 if known_count else 0)
+        name = os.path.basename(path)
+        if len(name) > 64:
+            name = name[:30] + "…" + name[-30:]
+        self._set_status(f"正在建立索引 · {current} / {total} 个文件 · {name}")
+
+    def _scan_failed(self, message):
+        self._scan_error = message
+        self._set_status(message)
+
     def _scan_finished(self):
         thread, self._scan = self._scan, None
         cancelled = thread.isInterruptionRequested()
@@ -574,11 +647,12 @@ class SourceOverviewDialog(QDialog):
         self.search.setEnabled(True)
         self.kind_filter.setEnabled(True)
         self._update_selection_summary()
+        self.scan_button.setEnabled(True)
         self.scan_button.setText("统计准确帧数")
         self.progress.hide()
         if cancelled:
             self._set_status("统计已取消，可以重新扫描。")
-        elif self.status.text() == "正在建立索引…":
+        elif self._scan_error is None:
             self._set_status("统计完成。" if not self.selection()["sources"] else "索引已就绪。")
         if self._reject_pending:
             super().reject()

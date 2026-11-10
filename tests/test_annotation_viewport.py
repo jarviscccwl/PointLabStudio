@@ -8,7 +8,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import numpy as np
 import pygfx as gfx
-from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtWidgets import QApplication, QLabel, QWidget
 
 from core.model.entities import CloudEntity, ScalarField
 from ui.viewport.annotation_overlay import (
@@ -26,6 +26,10 @@ def box(**changes):
 
 
 class SceneViewport(QWidget):
+    clear_selection_runtime = PointCloudViewport.clear_selection_runtime
+    _cancel_selection_drag = PointCloudViewport._cancel_selection_drag
+    _clear_selection_highlight = PointCloudViewport._clear_selection_highlight
+
     def __init__(self):
         super().__init__()
         self.resize(400, 300)
@@ -43,6 +47,7 @@ class SceneViewport(QWidget):
         self.refresh = Mock()
         self._sel_highlight = object()
         self._selected_point = ("existing selection", 3)
+        self.selection_label = QLabel(self)
         self._annotation_overlay = AnnotationOverlay(self)
 
 
@@ -122,6 +127,22 @@ class AnnotationOverlayTests(unittest.TestCase):
         PointCloudViewport.set_annotation_boxes(self.view, [box()])
         self.assertEqual(len(overlay.wires), 1)
 
+    def test_frame_change_removes_copied_screen_points_and_uses_only_new_frame(self):
+        old_cloud = CloudEntity("old", xyz=np.array([[0., 0., 0.], [1., 0., 0.]], np.float32))
+        new_cloud = CloudEntity("new", xyz=np.array([[.4, 0., 0.], [9., 0., 0.]], np.float32))
+        self.view.entities = [old_cloud]
+        PointCloudViewport._apply_selection_highlight(self.view, [(old_cloud, np.array([0]))])
+        copied_points = self.view._sel_highlight
+        self.assertIn(copied_points, self.view.scene.children)
+        self.view._sel_dragging = True
+        PointCloudViewport.set_entities(self.view, [new_cloud])
+        self.assertIsNone(self.view._sel_highlight)
+        self.assertNotIn(copied_points, self.view.scene.children)
+        self.assertFalse(self.view._sel_dragging)
+        PointCloudViewport.set_annotation_boxes(self.view, [box(yaw=0, size=[2, 2, 2])])
+        np.testing.assert_array_equal(
+            self.view._annotation_overlay.highlight.geometry.positions.data, new_cloud.xyz[:1])
+
     def test_highlight_is_bounded_ignores_invisible_clouds_and_obeys_clip_planes(self):
         self.view.entities = [CloudEntity(name="large", xyz=np.zeros((400_001, 3), np.float32)),
                               CloudEntity(name="hidden", xyz=np.ones((5, 3), np.float32), visible=False)]
@@ -176,6 +197,9 @@ class AnnotationOverlayTests(unittest.TestCase):
         self.assertIs(overlay.highlight, highlight)
         self.assertIn("renamed", label.text())
         self.assertIn("自动建议", label.text())
+        overlay.set_boxes([box(yaw=0, name="renamed", category="树木", manual=False)])
+        self.assertIn("树木", label.text())
+        self.assertIs(overlay.highlight, highlight)
         old_positions = wire.geometry.positions.data.copy()
         overlay.set_boxes([box(yaw=0, center=[3., 0., 0.])])
         self.assertIs(overlay.wires[0], wire)

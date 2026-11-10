@@ -26,6 +26,7 @@ class Viewport(QObject):
         super().__init__()
         self.boxes = []
         self.mode = None
+        self.selection_clears = 0
 
     def set_annotation_boxes(self, boxes):
         self.boxes = boxes
@@ -33,6 +34,9 @@ class Viewport(QObject):
     def set_interaction_mode(self, mode):
         self.mode = mode
         self.mode_changed.emit(mode or "")
+
+    def clear_selection_runtime(self):
+        self.selection_clears += 1
 
 
 class MemorySource(RecordingSource):
@@ -127,7 +131,6 @@ def test_extract_button_adds_current_box_with_original_frame_identity(controller
 
 
 def test_batch_action_exports_each_observed_frame_without_adding_all_to_scene(controller, tmp_path):
-    import json
     control, browser, app = controller
     select_target(control, browser)
     assert control.start_tracking("forward", 2)
@@ -136,13 +139,12 @@ def test_batch_action_exports_each_observed_frame_without_adding_all_to_scene(co
     assert control.dialog.batch_extract_action.isEnabled()
     clouds = []
     control.cloud_extracted.connect(clouds.append)
-    assert control.extract_associated(str(tmp_path))
+    assert control.extract_associated(str(tmp_path / "树.pcd"))
     wait_idle(control, app)
-    output = next(tmp_path.iterdir())
-    manifest = json.loads((output / "index.json").read_text(encoding="utf-8"))
-    assert [record["frame_index"] for record in manifest["frames"]] == [10, 11, 12]
+    output = sorted(tmp_path.iterdir())
+    assert [p.name for p in output] == ["树_000011.pcd", "树_000012.pcd", "树_000013.pcd"]
     assert not clouds
-    assert str(output) in control._message
+    assert str(output[0]) in control._message
 
 
 @pytest.mark.parametrize("state", ["loading", "missing_box", "changed_source", "cancel"])
@@ -178,6 +180,100 @@ def test_selection_creates_manual_original_index_and_reframe_keeps_id(controller
     assert len(restored) == 1
     assert restored[0]["id"] == track["id"]
     assert browser.left.cloud_view.boxes[0]["selected"]
+
+
+def test_creating_3d_box_releases_copied_screen_selection(controller):
+    control, browser, _ = controller
+    select_target(control, browser)
+    assert browser.left.cloud_view.selection_clears == 1
+    assert len(browser.left.cloud_view.boxes) == 1
+
+
+def test_category_survives_tracking_reframe_export_and_source_restore(controller, tmp_path):
+    import json
+    control, browser, app = controller
+    select_target(control, browser)
+    control.show()
+    dialog = control.dialog
+    assert dialog.category.isVisible()
+    assert dialog.category.isEditable()
+    assert dialog.category.findText("树木") >= 0
+    dialog.category.setEditText("树木")
+    dialog.category.lineEdit().editingFinished.emit()
+    track = control._track()
+    target_id = track.id
+    assert track.category == "树木"
+    assert browser.left.cloud_view.boxes[0]["category"] == "树木"
+    assert control.start_tracking("forward", 1)
+    wait_idle(control, app)
+    assert set(track.observations) == {10, 11}
+    browser.position.setValue(2)
+    browser.current_frames = [browser.entries[0].source.frames[11]]
+    browser._displayed_indices[0] = 11
+    control.on_frame_changed(browser.current_frames[0])
+    assert control._track().id == target_id
+    assert dialog.category.currentText() == "树木"
+    assert dialog.editor._source is browser.current_frames[0].value.xyz
+    np.testing.assert_array_equal(dialog.editor._points, browser.current_frames[0].value.xyz)
+    dialog.category.setEditText("  自定义树种  ")
+    dialog.category.lineEdit().editingFinished.emit()
+    assert track.category == "自定义树种"
+    control.set_mode("box", reframe=True)
+    cloud = browser.current_frames[0].value
+    browser.left.cloud_view.selection_changed.emit([(cloud, np.arange(60))])
+    assert control._track().category == "自定义树种"
+    assert control._track().id == target_id
+    output = tmp_path / "标注.json"
+    assert control.export_json(output)
+    saved = json.loads(output.read_text("utf-8"))["sources"][0]["streams"][0]["tracks"][0]
+    assert saved["category"] == "自定义树种"
+    payload = control.source_state(browser.entries[0].source.path)
+    control.clear()
+    control.restore_source(browser.entries[0].source.path, payload)
+    assert control._track().category == "自定义树种"
+    # An unassociated frame must not reuse the previous frame's box or points.
+    browser.position.setValue(3)
+    browser.current_frames = [browser.entries[0].source.frames[12]]
+    browser._displayed_indices[0] = 12
+    control.on_frame_changed(browser.current_frames[0])
+    assert browser.left.cloud_view.boxes == []
+    assert dialog.editor._source is None and dialog.editor.box is None
+
+
+def test_category_choice_applies_to_selected_target_only(controller):
+    control, browser, _ = controller
+    select_target(control, browser)
+    control.show()
+    first_id = control.selected_id
+    control.dialog.category.setEditText("汽车")
+    control.dialog.category.lineEdit().editingFinished.emit()
+    select_target(control, browser)
+    second_id = control.selected_id
+    assert second_id != first_id
+    assert control._track().category == ""
+    control.dialog.category.setEditText("树木")
+    control.dialog.category.activated.emit(control.dialog.category.findText("树木"))
+    control.select_target(first_id)
+    assert control.dialog.category.currentText() == "汽车"
+    control.select_target(second_id)
+    assert control.dialog.category.currentText() == "树木"
+
+
+def test_frame_loading_does_not_discard_category_being_typed(controller):
+    control, browser, app = controller
+    select_target(control, browser)
+    control.show()
+    app.processEvents()
+    edit = control.dialog.category.lineEdit()
+    edit.setFocus()
+    edit.selectAll()
+    QTest.keyClicks(edit, "oak")
+    assert edit.hasFocus() and edit.isModified()
+    control.invalidate_frame()
+    assert control.dialog.category.currentText() == "oak"
+    control.on_frame_changed(browser.current_frames[0])
+    edit.editingFinished.emit()
+    assert control._track().category == "oak"
 
 
 def test_invalidate_rejects_stale_selection_and_preserves_annotations(controller):

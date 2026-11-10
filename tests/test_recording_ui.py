@@ -388,6 +388,25 @@ class RecordingWindowTests(unittest.TestCase):
         self.assertIn("测试内容", self.window.recording_browser.left.text.toPlainText())
         self.assertEqual(self.window.entities, [])
 
+    def test_calibration_without_sources_survives_save_and_reopen(self):
+        from core.calibration import CameraCalibration, calibration_to_dict
+        browser = self.window.recording_browser
+        calibration = CameraCalibration([[1030.16049656, 0, 987.7], [0, 1026, 524], [0, 0, 1]],
+                                        [-.35, .13, -.001, -.0002, -.02], 1920, 1080)
+        browser._apply_calibration(calibration, "手动修正内参")
+        self.assertTrue(self.window._has_unsaved_project())
+        project = self.base / "仅相机参数.pls"
+        self.assertTrue(self.window.save_project(str(project)))
+        self.window._clear_recordings()
+        self.assertIsNone(browser.calibration)
+        self.assertTrue(self.window.open_project(str(project)))
+        self.idle()
+        self.assertIsNotNone(browser.calibration)
+        self.assertEqual(calibration_to_dict(browser.calibration), calibration_to_dict(calibration))
+        self.assertIn("手动修正", browser._calibration_origin)
+        self.assertEqual(browser.entries, [])
+        self.assertFalse(self.window._has_unsaved_project())
+
     def test_recording_header_color_and_colormap_work_on_either_cloud_pane(self):
         from core.model.entities import CloudEntity
         source = MemorySource({

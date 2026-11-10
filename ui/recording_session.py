@@ -14,6 +14,18 @@ from ui.widgets.recording_browser import BrowserStream, filter_frames
 from ui.widgets.source_overview import SourceOverviewDialog
 
 
+def discovery_label(update):
+    return (
+        f"发现文件 · 已检查 {update.directories:,} 个文件夹、{update.files:,} 个文件\n"
+        f"已找到 {update.sources:,} 个可浏览数据源"
+    )
+
+
+def _progress_source_name(path):
+    name = os.path.basename(path)
+    return name if len(name) <= 64 else name[:30] + "…" + name[-30:]
+
+
 class RecordingSessionMixin:
     def _init_recording_session(self):
         self._recording_jobs = set()
@@ -26,7 +38,7 @@ class RecordingSessionMixin:
         self._recording_dialog = None
         self._recording_progress = None
         self.recording_browser.tracking.changed.connect(self._update_project_title)
-        self.recording_browser.tracking.notice.connect(self.log)
+        self.recording_browser.tracking.notice.connect(self._tracking_notice)
         self.recording_browser.tracking.panel_visibility_changed.connect(self._sync_box_tool_state)
         self.recording_browser.stream_selected.connect(
             self._recording_selected_in_browser
@@ -44,6 +56,12 @@ class RecordingSessionMixin:
         self.scene_panel.recording_options_requested.connect(self._configure_recording_source)
         self.scene_panel.recording_reload_requested.connect(self._reload_recording_source)
         self.scene_panel.recording_topic_reload_requested.connect(self._reload_recording_topic)
+
+    def _tracking_notice(self, message):
+        self.log(message)
+        panel = self.recording_browser.tracking.dialog
+        if panel is not None and panel.isVisible() and panel.status.isHidden():
+            self._flash_status(message, 7000)
 
     def _sync_box_tool_state(self, visible):
         if self.content_stack.currentWidget() is self.recording_browser:
@@ -75,7 +93,10 @@ class RecordingSessionMixin:
 
     def _recording_threads(self):
         threads = list(self._recording_jobs)
-        if self.recording_browser._worker is not None:
+        background_threads = getattr(self.recording_browser, "background_threads", None)
+        if background_threads is not None:
+            threads.extend(background_threads())
+        elif self.recording_browser._worker is not None:
             threads.append(self.recording_browser._worker)
         if self.recording_browser.tracking.worker is not None:
             threads.append(self.recording_browser.tracking.worker)
@@ -84,13 +105,19 @@ class RecordingSessionMixin:
             and self._recording_dialog._scan is not None
         ):
             threads.append(self._recording_dialog._scan)
-        return threads
+        return list(dict.fromkeys(threads))
 
-    def _start_recording_job(self, function, done, failed, finished=None):
-        thread = RecordingTask(function, self)
+    def _start_recording_job(
+        self, function, done, failed, finished=None, *, progress_handler=None, detail=None,
+    ):
+        thread = RecordingTask(function, self, detailed=detail is not None)
         self._recording_jobs.add(thread)
         thread.done.connect(done)
         thread.failed.connect(failed)
+        if progress_handler is not None:
+            thread.progress.connect(progress_handler)
+        if detail is not None:
+            thread.progress_detail.connect(detail)
 
         def cleanup():
             self._recording_jobs.discard(thread)
@@ -102,16 +129,21 @@ class RecordingSessionMixin:
         thread.start()
         return thread
 
-    def _open_recording_sources(self, paths, prompt=True, restore=None, *, refresh=False):
+    def _open_recording_sources(
+        self, paths, prompt=True, restore=None, *, refresh=False, discovered=False,
+    ):
         if self._closing:
             return
-        self._recording_queue.append((list(paths), prompt, restore, refresh))
+        self._recording_queue.append((list(paths), prompt, restore, refresh, discovered))
         self._start_next_recording_import()
 
     def _start_next_recording_import(self):
         if self._closing or self._recording_importing or not self._recording_queue:
             return
         browser = self.recording_browser
+        if getattr(browser, "_exporting", False):
+            QTimer.singleShot(100, self._start_next_recording_import)
+            return
         browser.play.setChecked(False)
         if browser.tracking.worker is not None:
             browser.tracking.cancel()
@@ -122,7 +154,7 @@ class RecordingSessionMixin:
             browser._pending = None
             QTimer.singleShot(50, self._start_next_recording_import)
             return
-        paths, prompt, restore, refresh = self._recording_queue.pop(0)
+        paths, prompt, restore, refresh, discovered = self._recording_queue.pop(0)
         refresh_state = self._recording_state() if refresh else None
         if refresh:
             paths = [path for path in paths if path in self._recording_sources]
@@ -135,34 +167,59 @@ class RecordingSessionMixin:
             )
         self._recording_importing = True
         browser.setEnabled(False)
-        self.status_task.setText("正在识别数据源并读取概览…")
-        inspection = SmoothProgressDialog("正在识别数据源并读取概览…", "取消", 0, 0, self)
+        self.status_task.setText("正在读取数据源概览…" if discovered else "正在发现文件…")
+        inspection = SmoothProgressDialog(self.status_task.text(), "取消", 0, 0, self)
         inspection.setWindowTitle("读取数据包信息")
         inspection.setMinimumDuration(0)
+        inspection.setMinimumWidth(400)
+        inspection.setAutoClose(False)
+        inspection.setAutoReset(False)
         inspection.show()
         dispatched = False
         inspected_sources = []
 
-        def inspect(cancel, progress):
+        def inspect(cancel, progress, detail):
             sources, errors = inspected_sources, []
-            candidates = discover_sources(paths, cancel)
+            candidates = paths if discovered else discover_sources(
+                paths, cancel, progress=lambda update: detail({"discovery": update}),
+            )
+            stream_count = 0
             for index, path in enumerate(candidates):
                 if cancel():
                     break
+                detail({"current": index, "total": len(candidates), "path": path,
+                        "streams": stream_count})
                 source = None
                 try:
-                    source = open_source(path)
+                    source = open_source(path, cancel=cancel)
                     source.info = source.inspect(cancel=cancel)
                     sources.append(source)
+                    stream_count += len(source.info.streams)
                 except Exception as exc:
                     if source is not None:
                         source.close()
+                    if cancel():
+                        break
                     errors.append(f"{path}\n{exc}")
                 progress((index + 1) / max(len(candidates), 1))
-            if cancel():
-                for source in sources:
-                    source.close()
+                detail({"current": index + 1, "total": len(candidates), "path": path,
+                        "streams": stream_count})
             return sources, errors
+
+        def inspection_detail(update):
+            if self._closing or inspection.wasCanceled():
+                return
+            if "discovery" in update:
+                inspection.setRange(0, 0)
+                label = discovery_label(update["discovery"])
+            else:
+                inspection.setRange(0, 100)
+                label = (
+                    f"读取概览 · {update['current']:,} / {update['total']:,} 个数据源\n"
+                    f"已识别 {update['streams']:,} 个数据流 · {_progress_source_name(update['path'])}"
+                )
+            inspection.setLabelText(label)
+            self.status_task.setText(label.replace("\n", " · "))
 
         def ready(result):
             nonlocal dispatched
@@ -250,8 +307,18 @@ class RecordingSessionMixin:
                 self.status_task.setText("读取数据包信息已取消")
                 self._finish_recording_import()
 
-        worker = self._start_recording_job(inspect, ready, failed, finished)
-        inspection.canceled.connect(worker.requestInterruption)
+        worker = self._start_recording_job(
+            inspect, ready, failed, finished,
+            progress_handler=lambda value: inspection.setValue(round(value * 100)),
+            detail=inspection_detail,
+        )
+
+        def cancel_inspection():
+            if not dispatched:
+                worker.requestInterruption()
+                self.status_task.setText("正在取消数据源发现与概览读取…")
+
+        inspection.canceled.connect(cancel_inspection)
 
     def _index_recording_sources(self, sources, options, restore=None, refresh_state=None):
         chosen = options["sources"]
@@ -260,6 +327,7 @@ class RecordingSessionMixin:
             if source not in selected:
                 source.close()
         accepted = []
+        dispatched = False
         self.status_task.setText("正在建立帧索引，首次打开大包可能需要几分钟…")
         self._recording_progress = SmoothProgressDialog(
             "正在建立可浏览的帧索引…", "取消", 0, 100, self
@@ -270,7 +338,7 @@ class RecordingSessionMixin:
         self._recording_progress.setAutoReset(False)
         self._recording_progress.show()
 
-        def index_sources(cancel, progress):
+        def index_sources(cancel, progress, detail):
             errors = []
             for index, source in enumerate(selected):
                 if cancel():
@@ -284,6 +352,13 @@ class RecordingSessionMixin:
                     ]
                     if not ids:
                         raise ValueError("保存的数据流在此文件中已不存在")
+                    detail({
+                        "current": index, "total": len(selected), "path": source.path,
+                        "known_count": all(
+                            stream.count is not None for stream in source.info.streams
+                            if stream.id in ids
+                        ),
+                    })
                     source.build_index(
                         ids,
                         cancel=cancel,
@@ -296,9 +371,12 @@ class RecordingSessionMixin:
                     if cancel():
                         break
                     errors.append(f"{source.path}\n{exc}")
+                progress((index + 1) / max(len(selected), 1))
             return accepted, errors
 
         def indexed(result):
+            nonlocal dispatched
+            dispatched = True
             completed, errors = result
             for error in errors:
                 self.log("建立索引失败  " + error)
@@ -435,6 +513,8 @@ class RecordingSessionMixin:
                 self.log(f"{len(errors)} 个数据源索引失败，详情见上方日志。")
 
         def failed(message):
+            nonlocal dispatched
+            dispatched = True
             self.log("建立索引失败  " + message)
             self.status_task.setText(message)
 
@@ -446,17 +526,37 @@ class RecordingSessionMixin:
                 self._recording_progress.close()
                 self._recording_progress.deleteLater()
                 self._recording_progress = None
+            if not dispatched and not self._closing:
+                self.status_task.setText("已取消建立索引，现有浏览内容已保留")
             self._finish_recording_import()
 
-        thread = self._start_recording_job(index_sources, indexed, failed, finished)
-        thread.progress.connect(
-            lambda value: (
-                self._recording_progress.setValue(round(value * 100))
-                if self._recording_progress is not None
-                else None
+        def index_detail(update):
+            if self._recording_progress is None or self._recording_progress.wasCanceled():
+                return
+            label = (
+                f"准备帧索引 · {update['current'] + 1:,} / {update['total']:,} 个数据源\n"
+                f"{_progress_source_name(update['path'])} · 已有索引将自动复用"
             )
+            self._recording_progress.setRange(0, 100 if update["known_count"] else 0)
+            self._recording_progress.setLabelText(label)
+            self.status_task.setText(label.replace("\n", " · "))
+
+        thread = self._start_recording_job(
+            index_sources, indexed, failed, finished,
+            progress_handler=lambda value: (
+                self._recording_progress.setValue(round(value * 100))
+                if self._recording_progress is not None and self._recording_progress.maximum()
+                else None
+            ),
+            detail=index_detail,
         )
-        self._recording_progress.canceled.connect(thread.requestInterruption)
+
+        def cancel_index():
+            if not dispatched:
+                thread.requestInterruption()
+                self.status_task.setText("正在取消帧索引…")
+
+        self._recording_progress.canceled.connect(cancel_index)
 
     def _finish_recording_import(self):
         self._recording_importing = False
@@ -693,7 +793,13 @@ class RecordingSessionMixin:
         }
 
     def _restore_recordings(self, state, base):
-        if not isinstance(state, dict) or not state.get("sources"):
+        if not isinstance(state, dict):
+            return
+        if not state.get("sources"):
+            if isinstance(state.get("browser"), dict):
+                self.recording_browser.restore_state(state["browser"])
+                self._project_baseline = self._project_signature()
+                self._update_project_title()
             return
         import copy
 

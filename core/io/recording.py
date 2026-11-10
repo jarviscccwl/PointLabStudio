@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 import csv
 import codecs
 import hashlib
@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import tempfile
 from threading import RLock
+import time
 
 import numpy as np
 from PIL import Image
@@ -32,7 +33,7 @@ from core.io.recording_messages import (
     message_kind,
     serialized_header,
 )
-from core.io.scanner import natural_key
+from core.io.scanner import SUPPORTED_EXTS, natural_key
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp", ".gif"}
 SOURCE_EXTENSIONS = IMAGE_EXTENSIONS | {
@@ -79,79 +80,185 @@ def _bag_metadata(path):
     return None
 
 
-def is_data_source(path: str) -> bool:
+def is_data_source(path: str, cancel=None) -> bool:
+    check_cancel(cancel)
     path = Path(path).expanduser()
     if path.is_dir():
-        return bool(_bag_metadata(path) or _image_files(path))
+        if _bag_metadata(path):
+            check_cancel(cancel)
+            return True
+        with os.scandir(path) as entries:
+            for entry in entries:
+                check_cancel(cancel)
+                if Path(entry.name).suffix.lower() in IMAGE_EXTENSIONS and entry.is_file():
+                    return True
+        return False
     return path.is_file() and path.suffix.lower() in SOURCE_EXTENSIONS
 
 
-def _image_files(path):
-    return sorted(
-        (
-            file
-            for file in Path(path).iterdir()
-            if file.is_file() and file.suffix.lower() in IMAGE_EXTENSIONS
-        ),
-        key=lambda file: natural_key(file.name),
-    )
+def _image_files(path, cancel=None):
+    files = []
+    with os.scandir(path) as entries:
+        for entry in entries:
+            check_cancel(cancel)
+            if Path(entry.name).suffix.lower() in IMAGE_EXTENSIONS and entry.is_file():
+                files.append(Path(entry.path))
+
+    def order(file):
+        check_cancel(cancel)
+        return natural_key(file.name)
+
+    return sorted(files, key=order)
 
 
-def discover_sources(paths: list[str], cancel=None) -> list[str]:
-    found = {}
-    bags = set()
-    image_folders = set()
+@dataclass(frozen=True)
+class DiscoveryProgress:
+    """Observed counts only: a recursive search has no known total yet."""
+
+    directories: int
+    files: int
+    sources: int
+    current_path: str = ""
+    done: bool = False
+
+
+@dataclass
+class SourceInventory:
+    sources: list[str]
+    files: list[str]
+    directories: list[str]
+    errors: list[str]
+
+
+def discover_source_inventory(paths: list[str], cancel=None, progress=None) -> SourceInventory:
+    """Collect recordings, ordinary clouds and folders in one cancellable pass.
+
+    Check between scandir entries, rather than after os.walk has materialized a
+    whole large directory. Overlapping roots are visited once; image sequences
+    and split ROS bags retain the same grouping as discover_sources().
+    """
+    found, clouds, directories = {}, {}, {}
+    seen_files, visited = set(), set()
+    image_folders, bags, metadata = set(), set(), {}
+    errors = []
+    last_count, last_time = 0, 0.0
+
+    def key(path):
+        return os.path.normcase(os.fspath(path))
+
+    def bag_info(path):
+        identity = key(path)
+        if identity not in metadata:
+            check_cancel(cancel)
+            metadata[identity] = _bag_metadata(path)
+            check_cancel(cancel)
+        return metadata[identity]
+
+    def report(path="", *, force=False, done=False):
+        nonlocal last_count, last_time
+        check_cancel(cancel)
+        count = len(seen_files) + len(directories)
+        now = time.monotonic()
+        if progress and (force or count - last_count >= 128 or now - last_time >= 0.1):
+            progress(DiscoveryProgress(
+                len(directories), len(seen_files), len(found), os.fspath(path), done,
+            ))
+            last_count, last_time = count, now
+        check_cancel(cancel)
+
+    def add_file(path, *, grouped=False, in_bag=False):
+        identity = key(path)
+        if identity in seen_files:
+            return
+        seen_files.add(identity)
+        suffix = path.suffix.lower()
+        if suffix in SUPPORTED_EXTS - SOURCE_EXTENSIONS:
+            clouds[identity] = str(path)
+        if in_bag:
+            return
+        if suffix in IMAGE_EXTENSIONS and grouped:
+            image_folders.add(key(path.parent))
+            found[key(path.parent)] = str(path.parent)
+        elif suffix in SOURCE_EXTENSIONS and not (
+            suffix in IMAGE_EXTENSIONS and key(path.parent) in image_folders
+        ):
+            found[identity] = str(path)
+
+    report(force=True)
+    roots, explicit = {}, {}
     for item in paths:
         check_cancel(cancel)
-        path = Path(item).expanduser().resolve()
-        # A split file explicitly selected together with its bag still belongs to the bag.
-        if (
-            path.is_file()
-            and path.suffix.lower() in (".db3", ".mcap")
-            and _bag_metadata(path.parent)
-        ):
-            path = path.parent
-        if _bag_metadata(path):
-            bags.add(path)
-            found[os.path.normcase(str(path))] = str(path)
-        elif path.is_dir():
-            for root, dirs, files in os.walk(path):
-                check_cancel(cancel)
-                root_path = Path(root)
-                if _bag_metadata(root_path):
-                    bags.add(root_path)
-                    found[os.path.normcase(str(root_path))] = str(root_path)
-                    dirs[:] = []
-                else:
-                    if any(
-                        Path(name).suffix.lower() in IMAGE_EXTENSIONS for name in files
-                    ):
-                        image_folders.add(root_path)
-                        found[os.path.normcase(str(root_path))] = str(root_path)
-                    for filename in files:
-                        candidate = root_path / filename
-                        if (
-                            candidate.suffix.lower()
-                            in SOURCE_EXTENSIONS - IMAGE_EXTENSIONS
-                        ):
-                            found[os.path.normcase(str(candidate))] = str(candidate)
-        elif is_data_source(str(path)):
-            found[os.path.normcase(str(path))] = str(path)
-    return sorted(
-        [
-            value
-            for value in found.values()
-            if (
-                Path(value) in bags
-                or not any(bag in Path(value).parents for bag in bags)
-            )
-            and not (
-                Path(value).suffix.lower() in IMAGE_EXTENSIONS
-                and Path(value).parent in image_folders
-            )
-        ],
-        key=natural_key,
+        try:
+            path = Path(item).expanduser().resolve()
+            is_directory = path.is_dir()
+            if (not is_directory and path.is_file()
+                    and path.suffix.lower() in (".db3", ".mcap") and bag_info(path.parent)):
+                path, is_directory = path.parent, True
+            if is_directory:
+                roots[key(path)] = path
+            elif path.is_file():
+                explicit[key(path)] = path
+            else:
+                errors.append(f"{path}\n路径不存在或无法读取")
+        except OSError as exc:
+            errors.append(f"{item}\n{exc}")
+
+    # Parents first so a nested explicit root cannot publish files from inside
+    # a bag before that bag has been discovered by its containing directory.
+    for root in sorted(roots.values(), key=lambda path: len(path.parts)):
+        pending = [(root, False)]
+        while pending:
+            check_cancel(cancel)
+            folder, in_bag = pending.pop()
+            identity = key(folder)
+            if identity in visited:
+                continue
+            visited.add(identity)
+            directories[identity] = str(folder)
+            if not in_bag and bag_info(folder):
+                bags.add(identity)
+                found[identity] = str(folder)
+                in_bag = True
+            try:
+                with os.scandir(folder) as entries:
+                    for entry in entries:
+                        check_cancel(cancel)
+                        path = Path(entry.path)
+                        try:
+                            if entry.is_dir(follow_symlinks=False):
+                                pending.append((path, in_bag))
+                            elif entry.is_file():
+                                add_file(path, grouped=True, in_bag=in_bag)
+                            elif entry.is_dir():
+                                # Match os.walk's non-following behavior while
+                                # still keeping the linked folder in the tree.
+                                directories[key(path)] = str(path)
+                        except OSError as exc:
+                            errors.append(f"{path}\n{exc}")
+                        report(path)
+            except OSError as exc:
+                errors.append(f"{folder}\n{exc}")
+            report(folder)
+
+    for path in explicit.values():
+        check_cancel(cancel)
+        add_file(path, in_bag=any(key(parent) in bags for parent in path.parents))
+        report(path)
+
+    def order(path):
+        check_cancel(cancel)
+        return natural_key(path)
+
+    result = SourceInventory(
+        sorted(found.values(), key=order), sorted(clouds.values(), key=order),
+        sorted(directories.values(), key=order), errors,
     )
+    report(force=True, done=True)
+    return result
+
+
+def discover_sources(paths: list[str], cancel=None, progress=None) -> list[str]:
+    return discover_source_inventory(paths, cancel=cancel, progress=progress).sources
 
 
 def _source_files(path):
@@ -963,7 +1070,12 @@ class ImageSequenceSource(RecordingSource):
 
     def inspect(self, cancel=None):
         check_cancel(cancel)
-        self._files = _image_files(self.path)
+        files = _image_files(self.path, cancel=cancel)
+        size_bytes = 0
+        for file in files:
+            check_cancel(cancel)
+            size_bytes += file.stat().st_size
+        self._files = files
         stream = StreamInfo(
             "0",
             Path(self.path).name,
@@ -975,7 +1087,7 @@ class ImageSequenceSource(RecordingSource):
             self.path,
             "Image sequence",
             [stream],
-            size_bytes=sum(file.stat().st_size for file in self._files),
+            size_bytes=size_bytes,
         )
         return self.info
 
@@ -1009,9 +1121,10 @@ class ImageSequenceSource(RecordingSource):
         return result
 
 
-def open_source(path: str) -> RecordingSource:
+def open_source(path: str, cancel=None) -> RecordingSource:
+    check_cancel(cancel)
     path = str(Path(path).expanduser().resolve())
-    if not is_data_source(path):
+    if not is_data_source(path, cancel=cancel):
         raise ValueError(f"Unsupported recording or file source: {path}")
     suffix = Path(path).suffix.lower()
     if suffix in (".pcap", ".pcapng"):

@@ -13,6 +13,7 @@ from core.calibration import (
     load_calibration,
     project_points,
 )
+import core.calibration as calibration_module
 
 
 class CalibrationTests(unittest.TestCase):
@@ -24,6 +25,28 @@ class CalibrationTests(unittest.TestCase):
 
     def calibrated(self, **changes):
         return calibration_from_dict({**self.data, "T_camera_lidar": np.eye(4).tolist(), **changes})
+
+    def test_pose_uses_degrees_right_handed_xyz_and_camera_translation(self):
+        matrix = calibration_module.extrinsics_from_pose([.1, -.2, .3], [90, 0, 90])
+        np.testing.assert_allclose(matrix, [[0, 0, 1, .1], [1, 0, 0, -.2],
+                                           [0, 1, 0, .3], [0, 0, 0, 1]], atol=1e-14)
+
+    def test_pose_conversion_roundtrips_near_and_at_gimbal_lock(self):
+        for angles in ([12.123456789, -34.5, 56.7], [23, 90, -45], [-32, -90, 77],
+                       [12, 89.999999, -80]):
+            with self.subTest(angles=angles):
+                original = calibration_module.extrinsics_from_pose([.123456789, -.2, .3], angles)
+                position, rotation = calibration_module.pose_from_extrinsics(original)
+                rebuilt = calibration_module.extrinsics_from_pose(position, rotation)
+                np.testing.assert_allclose(rebuilt, original, rtol=0, atol=1e-12)
+
+    def test_pose_rejects_invalid_values_and_matrix_without_mutating_input(self):
+        for position, rotation in (([0, 0], [0, 0, 0]), ([0, 0, np.inf], [0, 0, 0]),
+                                   ([0, 0, 0], [0, np.nan, 0])):
+            with self.subTest(position=position), self.assertRaises(ValueError):
+                calibration_module.extrinsics_from_pose(position, rotation)
+        with self.assertRaises(ValueError):
+            calibration_module.pose_from_extrinsics(np.zeros((4, 4)))
 
     def test_camera_info_intrinsics_have_no_default_extrinsics(self):
         camera = from_camera_info({
@@ -218,7 +241,8 @@ class CalibrationTests(unittest.TestCase):
             {"translation_units": "inch"},
             {"translation_units": []}, {"distortion_model": []},
             {"T_camera_lidar": np.eye(4).tolist(), "transform_direction": "camera_to_lidar"},
-            {"T_camera_lidar": np.eye(4).tolist(), "T_lidar_camera": np.eye(4).tolist()},
+            {"T_camera_lidar": np.eye(4).tolist(),
+             "T_lidar_camera": [[1, 0, 0, 1], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]},
         ]
         for changes in cases:
             with self.subTest(changes=changes), self.assertRaises(ValueError):

@@ -11,16 +11,16 @@ from pathlib import Path
 import numpy as np
 from PySide6.QtCore import QIODevice, QSaveFile, QSignalBlocker, Qt, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
-from PySide6.QtWidgets import QFileDialog, QInputDialog, QMessageBox, QWidget
+from PySide6.QtWidgets import QDialog, QFileDialog, QInputDialog, QMessageBox, QWidget
 
 from core.calibration import (
     calibration_from_dict,
     calibration_to_dict,
     from_camera_info,
-    load_calibration,
     project_points,
 )
 from core.calibration_display import projection_colors
+from core.calibration_files import read_calibration_bundle, CALIBRATION_FILE_FILTER
 from core.color.colormaps import compute_colors, list_colormaps
 from core.fusion import project_box_segments, sample_image_colors
 from core.io.recording_types import FrameData, FrameRef, RecordingSource, StreamInfo
@@ -28,7 +28,10 @@ from core.model.entities import COLOR_MODES, ScalarField
 from core.object_tracking import Box3D
 from core.recording_sync import TimestampMatcher
 from ui.recording_tasks import RecordingTask
-from ui.widgets.data_view import DataView
+from ui.widgets.data_view import DataView, render_projection_image
+from ui.widgets.recording_prefetch import PreparedFramesMixin
+from ui.widgets.recording_export import RecordingExportController
+from ui.widgets.calibration_editor import CalibrationImportDialog, IntrinsicsDialog, ExtrinsicsDialog
 from ui.widgets.source_overview import KIND_LABELS, time_text
 from ui.widgets.recording_chrome import RecordingChromeMixin
 from ui.widgets.object_tracking import ObjectTrackingController
@@ -92,7 +95,7 @@ def _frame_bytes(frame):
     return len(str(frame.value)) * 4
 
 
-class RecordingBrowser(RecordingChromeMixin, QWidget):
+class RecordingBrowser(PreparedFramesMixin, RecordingChromeMixin, QWidget):
     stream_selected = Signal(object)
     cloud_to_scene = Signal(object)
     text_as_cloud = Signal(str)
@@ -106,6 +109,7 @@ class RecordingBrowser(RecordingChromeMixin, QWidget):
 
     def __init__(self, theme="dark", viewport_factory=None, parent=None):
         super().__init__(parent)
+        self._init_prepared_frames()
         self.entries = []
         self._worker = None
         self._pending = None
@@ -119,6 +123,7 @@ class RecordingBrowser(RecordingChromeMixin, QWidget):
         self._page_offsets = {}
         self._page_positions = {}
         self.calibration = None
+        self._calibration_origin = ""
         self._calibration_key = None
         self._pair = None
         self.color_mode = "height"
@@ -132,6 +137,8 @@ class RecordingBrowser(RecordingChromeMixin, QWidget):
         self._annotation_boxes = []
         self._open_box_on_frame = False
         self._building = False
+        self._exporting = False
+        self._last_frame_error = ""
         self.current_frames = []
         self._build_chrome(theme, viewport_factory)
         self._timeline_cache = {}
@@ -177,7 +184,14 @@ class RecordingBrowser(RecordingChromeMixin, QWidget):
         self.play.toggled.connect(self._play_changed)
         self.rate.valueChanged.connect(self._schedule_next)
         self.calibration_button.clicked.connect(self._import_calibration)
-        self.export_button.clicked.connect(lambda: self.export_current())
+        self.exporter = RecordingExportController(self)
+        self.export_button.clicked.connect(self.exporter.open_dialog)
+        self.range_button.toggled.connect(self._range_toggled)
+        self.slider.selectionChanged.connect(self._range_changed)
+        self.range_first.valueChanged.connect(lambda value: self.slider.setSelection(
+            value - 1, max(value - 1, self.range_last.value() - 1)))
+        self.range_last.valueChanged.connect(lambda value: self.slider.setSelection(
+            min(value - 1, self.range_first.value() - 1), value - 1))
         self.scene_button.triggered.connect(self._add_cloud)
         self.swap_button.clicked.connect(self.swap_views)
         self.jump_button.clicked.connect(self._ask_time_jump)
@@ -188,6 +202,8 @@ class RecordingBrowser(RecordingChromeMixin, QWidget):
         self.reload_topic_action.triggered.connect(lambda: self.reload_topic())
         self.reload_comparison_action.triggered.connect(lambda: self.reload_topic(self.secondary.currentData()))
         self.calibration_panel.save_button.clicked.connect(self._save_calibration)
+        self.calibration_panel.edit_button.clicked.connect(self._edit_intrinsics)
+        self.calibration_panel.edit_extrinsics_button.clicked.connect(self._edit_extrinsics)
         self.calibration_panel.reset_button.clicked.connect(self._reset_calibration)
         self.calibration_panel.display_changed.connect(self._request_frame)
         self.calibration_panel.colorize.toggled.connect(self._request_frame)
@@ -263,6 +279,8 @@ class RecordingBrowser(RecordingChromeMixin, QWidget):
         return True
 
     def _apply_topic_reloads(self):
+        if self._reload_topics:
+            self._clear_prepared()
         for key in self._reload_topics:
             for cached in list(self._cache):
                 if cached[:2] == key:
@@ -279,6 +297,7 @@ class RecordingBrowser(RecordingChromeMixin, QWidget):
         return next((entry for entry in self.entries if entry.key == key), None)
 
     def set_entries(self, entries, *, state=None):
+        self._clear_prepared()
         primary, secondary, camera = (
             self.primary.currentData(),
             self.secondary.currentData(),
@@ -335,6 +354,9 @@ class RecordingBrowser(RecordingChromeMixin, QWidget):
         self.position.setValue(1)
         self.position.blockSignals(False)
         self.slider.setRange(0, max(count - 1, 0))
+        self.slider.setSelection(0, max(count - 1, 0))
+        self.range_button.setChecked(False)
+        self._range_changed(*self.slider.selection())
         self.total.setText(f"/ {count:,}")
         for widget in (self.position, self.slider, self.play, self.export_button):
             widget.setEnabled(count > 0)
@@ -377,6 +399,9 @@ class RecordingBrowser(RecordingChromeMixin, QWidget):
         for combo in (self.primary, self.secondary):
             index = combo.currentIndex()
             combo.setToolTip(combo.itemData(index, Qt.ToolTipRole) or "选择数据流")
+        tracking = getattr(self, "tracking", None)
+        if tracking is not None and tracking.dialog is not None:
+            tracking.dialog.schedule_layout()
 
     def _basis_changed(self, *_args):
         self._update_transport()
@@ -409,6 +434,8 @@ class RecordingBrowser(RecordingChromeMixin, QWidget):
         bounds = self._time_bounds()
         self.jump_button.setEnabled(multiple and bounds is not None and bounds[0] != bounds[1])
         self.jump_button.setVisible(multiple)
+        self.range_button.setVisible(multiple)
+        self._update_range_row()
         if bounds is not None and entry and entry.frames:
             ref = entry.frames[min(self.position.value() - 1, count - 1)]
             stamp = ref.record_time_ns if self.basis.currentData() == "record" else ref.timestamp_ns
@@ -419,6 +446,19 @@ class RecordingBrowser(RecordingChromeMixin, QWidget):
                 self.time_label.setToolTip(f"{'记录 / 抓包时间' if self.basis.currentData() == 'record' else '设备 / 消息头时间'}\n{time_text(stamp)}\n{stamp} ns")
         else:
             self.time_label.setText("无时间戳 · 按帧浏览" if multiple else "单个文件 / 消息")
+
+    def _range_toggled(self, checked):
+        self.slider.setSelectionEnabled(checked)
+        self._range_changed(*self.slider.selection())
+
+    def _range_changed(self, first, last):
+        for spin, value in ((self.range_first, first + 1), (self.range_last, last + 1)):
+            blocker = QSignalBlocker(spin)
+            spin.setRange(1, self.slider.maximum() + 1)
+            spin.setValue(value)
+            blocker.unblock()
+        self.range_count.setText(f"共 {last - first + 1:,} 帧")
+        self._update_range_row()
 
     def jump_to_time(self, seconds):
         bounds = self._time_bounds()
@@ -465,6 +505,7 @@ class RecordingBrowser(RecordingChromeMixin, QWidget):
         if pair != self._pair:
             self._pair = pair
             self.calibration = None
+            self._calibration_origin = ""
             self._calibration_key = None
             self.overlay.setChecked(False)
             self.undistort.setChecked(False)
@@ -493,10 +534,14 @@ class RecordingBrowser(RecordingChromeMixin, QWidget):
         if self._building:
             return
         self.calibration = None
+        self._calibration_origin = ""
         self._calibration_key = None
         self._request_frame()
 
     def _position_changed(self, value):
+        if value != self._last_requested_position:
+            self._navigation_direction = 1 if value > self._last_requested_position else -1
+        self._last_requested_position = value
         self.slider.blockSignals(True)
         self.slider.setValue(value - 1)
         self.slider.blockSignals(False)
@@ -521,7 +566,8 @@ class RecordingBrowser(RecordingChromeMixin, QWidget):
 
     def _schedule_next(self, *_args):
         if (self._building or self._stopping or not self.play.isChecked()
-                or self._worker is not None or self._pending is not None or self.tracking.busy):
+                or (self._worker is not None and not getattr(self._worker, "background", False))
+                or self._pending is not None or self.tracking.busy):
             return
         if (self.position.value() >= self.position.maximum() or not self.current_frames
                 or not isinstance(self.current_frames[0], FrameData)):
@@ -545,6 +591,8 @@ class RecordingBrowser(RecordingChromeMixin, QWidget):
     def _request_frame(self, *_args):
         if self._building or self._stopping:
             return
+        self._last_frame_error = ""
+        self._prefetch_timer.stop()
         self.tracking.invalidate_frame()
         self.tracking_button.setEnabled(False)
         self.timer.stop()
@@ -565,6 +613,11 @@ class RecordingBrowser(RecordingChromeMixin, QWidget):
             view.as_cloud.setEnabled(False)
         self._generation += 1
         self._pending = self._generation
+        self._read_started_at = time.monotonic()
+        if self._worker is not None:
+            self._worker.requestInterruption()
+        if self.tracking.worker is None and self._use_prepared(self._generation):
+            return
         if self.tracking.worker is not None:
             self.tracking.cancel()
         elif self._worker is not None:
@@ -654,11 +707,17 @@ class RecordingBrowser(RecordingChromeMixin, QWidget):
             self._matcher_cache[key] = TimestampMatcher(entry.frames, basis)
         return self._matcher_cache[key]
 
-    def _start_read(self):
+    def _start_read(self, prefetch_position=None):
         if self.tracking.worker is not None:
             return
-        self._apply_topic_reloads()
-        generation, self._pending = self._pending, None
+        background = prefetch_position is not None
+        if background:
+            generation = self._generation
+        else:
+            self._apply_topic_reloads()
+            generation, self._pending = self._pending, None
+            if self._use_prepared(generation):
+                return
         entry = self.entry(self.primary.currentData())
         if self._stopping or entry is None or not entry.frames:
             self.current_frames = []
@@ -666,12 +725,14 @@ class RecordingBrowser(RecordingChromeMixin, QWidget):
             self.right.clear()
             self.status.clear()
             self.status.hide()
-            self.calibration_panel.set_calibration(self.calibration)
+            self.calibration_panel.set_calibration(self.calibration, self._calibration_origin)
             self.frame_changed.emit(None)
             return
-        position = self.position.value() - 1
+        position = prefetch_position if background else self.position.value() - 1
+        prepared_key = self._prepared_key(position)
         ref = entry.frames[position]
-        self._read_started_at = time.monotonic()
+        if not background:
+            self._read_started_at = time.monotonic()
         secondary = (
             self.entry(self.secondary.currentData())
             if self.compare.isChecked()
@@ -771,6 +832,7 @@ class RecordingBrowser(RecordingChromeMixin, QWidget):
                     current_calibration = None
                     error = f"相机参数无法用于投影或去畸变  {exc}"
             pixels = colors = image_colors = None
+            prepared_image = None
             projection_calibration = None
             try:
                 image_index = next(
@@ -831,27 +893,39 @@ class RecordingBrowser(RecordingChromeMixin, QWidget):
                                                    projection_style["color"])
                     if colorize and cloud is not None and projection_calibration.T_camera_lidar is not None:
                         image_colors = sample_image_colors(cloud.xyz, image, projection_calibration)
+                    if not cancel():
+                        prepared_image = render_projection_image(
+                            image, pixels, colors, projection_style["size"], projection_style["opacity"])
             except Exception as exc:
                 error = f"标定显示失败  {exc}"
             return (generation, frames, match, current_calibration, key, error, pixels, colors,
-                    projection_style, match_status, image_colors, projection_calibration)
+                    projection_style, match_status, image_colors, projection_calibration, prepared_image)
 
-        self.previous.setEnabled(position > 0)
-        self.next.setEnabled(position + 1 < len(entry.frames))
-        self.status.setText("正在读取当前帧…")
-        self.status.show()
+        if not background:
+            self.previous.setEnabled(position > 0)
+            self.next.setEnabled(position + 1 < len(entry.frames))
+            self.status.setText("正在读取当前帧…")
+            self.status.show()
         self._worker = RecordingTask(read, self)
+        self._worker.background = background
         self._worker.request_generation = generation
-        self._worker.done.connect(self._show_result)
-        self._worker.failed.connect(self._show_error)
+        self._worker.done.connect(lambda result: self._remember_prepared(prepared_key, result))
+        if background:
+            self._worker.failed.connect(lambda _message: self._mark_prefetch_failed(prepared_key))
+        if not background:
+            self._worker.done.connect(self._show_result)
+            self._worker.failed.connect(self._show_error)
         self._worker.finished.connect(self._read_finished)
+        if background:
+            self.tracking.refresh_reader_actions()
         self._worker.start()
 
     def _show_result(self, result):
         if result is None or result[0] != self._generation or self._stopping:
             return
         (_, frames, match, calibration, key, error, pixels, colors, projection_style,
-         match_status, image_colors, projection_calibration) = result
+         match_status, image_colors, projection_calibration, *prepared_images) = result
+        self._last_frame_error = error
         self.calibration = calibration
         self._calibration_key = key
         self._source_frames = frames
@@ -875,6 +949,7 @@ class RecordingBrowser(RecordingChromeMixin, QWidget):
                     frame, entry.label, pixels if frame.kind == "image" else None,
                     colors=colors, point_size=projection_style["size"], opacity=projection_style["opacity"],
                     source_key=entry.key,
+                    prepared_image=prepared_images[0] if prepared_images and frame.kind == "image" else None,
                 )
                 view.set_page_state(
                     self._page_positions.get(entry.key, 0) + 1,
@@ -909,7 +984,7 @@ class RecordingBrowser(RecordingChromeMixin, QWidget):
         self.status_changed.emit(self.status.text())
         self.calibration_panel.set_calibration(
             calibration,
-            self.camera.currentText() if self.camera.currentData() else "",
+            self.camera.currentText() if self.camera.currentData() else self._calibration_origin,
             error,
             has_image=any(isinstance(frame, FrameData) and frame.kind == "image" for frame in frames),
             has_cloud=any(isinstance(frame, FrameData) and frame.kind == "pointcloud" for frame in frames),
@@ -937,6 +1012,7 @@ class RecordingBrowser(RecordingChromeMixin, QWidget):
             generation = getattr(self.sender(), "request_generation", self._generation)
         if self._stopping or generation != self._generation:
             return
+        self._last_frame_error = message
         self.status.setText(message)
         self.status.show()
         self.play.setChecked(False)
@@ -959,23 +1035,75 @@ class RecordingBrowser(RecordingChromeMixin, QWidget):
         if self._pending is not None and not self._stopping:
             self._start_read()
         elif not self._stopping:
-            self.tracking.on_frame_changed(self.current_frames[0] if self.current_frames else None)
+            if (not getattr(worker, 'background', False)
+                    and getattr(worker, 'request_generation', None) == self._generation):
+                self.tracking.on_frame_changed(self.current_frames[0] if self.current_frames else None)
+            else:
+                self.tracking.refresh_reader_actions()
             self._schedule_next()
+            self._schedule_prefetch()
 
     def _import_calibration(self):
+        self.play.setChecked(False)
         path, _ = QFileDialog.getOpenFileName(
-            self, "导入相机内参 / 雷达到相机外参", "", "标定文件 (*.yaml *.yml *.json)"
+            self, "导入相机内参 / 雷达到相机外参", "", CALIBRATION_FILE_FILTER
         )
         if path:
             try:
-                self.calibration = load_calibration(path, base=self.calibration)
-                self.camera.blockSignals(True)
-                self.camera.setCurrentIndex(0)
-                self.camera.blockSignals(False)
-                self._calibration_key = None
-                self._request_frame()
+                dialog = CalibrationImportDialog(
+                    read_calibration_bundle(path), self.calibration,
+                    theme=self.calibration_panel._theme, parent=self,
+                    base_origin=self._calibration_origin or self.camera.currentText(),
+                )
+                if dialog.exec() == QDialog.Accepted:
+                    self._apply_calibration(dialog.calibration, dialog.origin)
+                dialog.deleteLater()
             except Exception as exc:
                 QMessageBox.warning(self, "无法读取标定", str(exc))
+
+    def _edit_intrinsics(self):
+        self.play.setChecked(False)
+        image = next((frame.value for frame in self._source_frames
+                      if isinstance(frame, FrameData) and frame.kind == "image"), None)
+        dialog = IntrinsicsDialog(
+            self.calibration, image_size=(image.shape[1], image.shape[0]) if image is not None else None,
+            theme=self.calibration_panel._theme, parent=self,
+        )
+        if dialog.exec() == QDialog.Accepted:
+            origin = self._calibration_origin or (
+                self.camera.currentText() if self.camera.currentData() else "手动输入")
+            if not origin.startswith("手动修正内参"):
+                origin = f"手动修正内参；原始来源：{origin}"
+            self._apply_calibration(dialog.calibration, origin)
+        dialog.deleteLater()
+
+    def _edit_extrinsics(self):
+        if self.calibration is None:
+            return
+        self.play.setChecked(False)
+        dialog = ExtrinsicsDialog(self.calibration, theme=self.calibration_panel._theme, parent=self)
+        if dialog.exec() == QDialog.Accepted:
+            origin = self._calibration_origin or self.camera.currentText() or "手动输入"
+            if not origin.startswith("手动修正外参"):
+                origin = f"手动修正外参；原始来源：{origin}"
+            self._apply_calibration(dialog.calibration, origin)
+        dialog.deleteLater()
+
+    def _apply_calibration(self, calibration, origin):
+        """Freeze corrected parameters and invalidate every in-flight projection."""
+        self.play.setChecked(False)
+        self.calibration = calibration
+        self._calibration_origin = origin
+        blocker = QSignalBlocker(self.camera)
+        self.camera.setCurrentIndex(0)
+        blocker.unblock()
+        self._calibration_key = None
+        self.calibration_panel.set_calibration(
+            calibration, origin,
+            has_image=any(isinstance(frame, FrameData) and frame.kind == "image" for frame in self._source_frames),
+            has_cloud=any(isinstance(frame, FrameData) and frame.kind == "pointcloud" for frame in self._source_frames),
+        )
+        self._request_frame()
 
     def _save_calibration(self):
         if self.calibration is None:
@@ -987,7 +1115,10 @@ class RecordingBrowser(RecordingChromeMixin, QWidget):
             path += ".json"
         output = QSaveFile(path)
         try:
-            data = json.dumps(calibration_to_dict(self.calibration), ensure_ascii=False,
+            parameters = calibration_to_dict(self.calibration)
+            parameters["calibration_source"] = self._calibration_origin or (
+                self.camera.currentText() if self.camera.currentData() else "")
+            data = json.dumps(parameters, ensure_ascii=False,
                               indent=2, allow_nan=False).encode("utf-8")
             if not output.open(QIODevice.WriteOnly):
                 raise OSError(output.errorString())
@@ -1009,6 +1140,7 @@ class RecordingBrowser(RecordingChromeMixin, QWidget):
         for widget in (self.camera, self.overlay, self.undistort, self.calibration_panel.colorize):
             widget.blockSignals(False)
         self.calibration = None
+        self._calibration_origin = ""
         self._calibration_key = None
         self.calibration_panel.set_calibration(None)
         self._request_frame()
@@ -1107,7 +1239,7 @@ class RecordingBrowser(RecordingChromeMixin, QWidget):
                 for track in stream.get("tracks", {}).values():
                     observation = track.observations.get(index)
                     if observation is not None:
-                        records.append({"id": track.id[:8], "name": track.name,
+                        records.append({"id": track.id[:8], "name": track.name, "category": track.category,
                                         **observation.box.to_dict(), "manual": observation.manual,
                                         "selected": track.id == self.tracking.selected_id})
             self._annotation_boxes = records
@@ -1185,11 +1317,12 @@ class RecordingBrowser(RecordingChromeMixin, QWidget):
             if frame.kind == "pointcloud":
                 from core.io.exporters import export_entity
 
-                export_entity(frame.value, path)
+                export_entity(self.export_cloud_entity(side), path)
             elif frame.kind == "image":
                 from ui.widgets.data_view import image_to_qimage
 
-                if not image_to_qimage(frame.value).save(path):
+                view = self.left if side == 0 else self.right
+                if not image_to_qimage(view.image.snapshot_rgb()).save(path):
                     raise ValueError("图像保存失败")
             elif frame.kind == "table":
                 import csv
@@ -1219,6 +1352,26 @@ class RecordingBrowser(RecordingChromeMixin, QWidget):
         except Exception as exc:
             QMessageBox.warning(self, "导出失败", str(exc))
 
+    def export_cloud_entity(self, side):
+        """Keep sensor colors outside the camera; display colormaps are not data."""
+        frame = self._source_frames[side]
+        if not isinstance(frame, FrameData) or frame.kind != "pointcloud":
+            raise ValueError("当前帧没有可导出的点云")
+        cloud = frame.value
+        if not self.calibration_panel.colorize.isChecked() or self._image_colors is None:
+            return cloud
+        fields = dict(cloud.fields)
+        rgb = fields.get("rgb")
+        colors = (np.array(rgb.data, dtype=np.float32, copy=True) if rgb is not None else
+                  np.full((len(cloud.xyz), 3), .5, np.float32))
+        samples, indices = self._image_colors
+        colors[indices] = samples
+        valid = np.zeros(len(cloud.xyz), np.uint8)
+        valid[indices] = 1
+        fields["rgb"] = ScalarField("rgb", colors, "color")
+        fields["image_color_valid"] = ScalarField("image_color_valid", valid)
+        return replace(cloud, fields=fields, color_mode="rgb")
+
     def state(self):
         return {
             "primary": self.primary.currentData(),
@@ -1229,6 +1382,7 @@ class RecordingBrowser(RecordingChromeMixin, QWidget):
             "tolerance_ms": self.tolerance.value(),
             "offset_ms": self.offset.value(),
             "camera": self.camera.currentData(),
+            "calibration_origin": self._calibration_origin,
             "calibration": (
                 calibration_to_dict(self.calibration)
                 if self.calibration is not None and self.camera.currentData() is None
@@ -1244,6 +1398,8 @@ class RecordingBrowser(RecordingChromeMixin, QWidget):
             "box_overlay": self.calibration_panel.box_overlay.isChecked(),
             "point_size": self.point_size,
             "projection_style": self.calibration_panel.display_options(),
+            "frame_selection": list(self.slider.selection()),
+            "selection_enabled": self.slider.selectionEnabled(),
         }
 
     def restore_state(self, state):
@@ -1262,6 +1418,10 @@ class RecordingBrowser(RecordingChromeMixin, QWidget):
         count = len(entry.frames) if entry else 0
         self.position.setRange(1, max(count, 1))
         self.slider.setRange(0, max(count - 1, 0))
+        selection = state.get("frame_selection", [0, max(count - 1, 0)])
+        self.slider.setSelection(*selection)
+        self.range_button.setChecked(bool(state.get("selection_enabled", False)))
+        self._range_changed(*self.slider.selection())
         self.total.setText(f"/ {count:,}")
         for widget in (self.position, self.slider, self.play):
             widget.setEnabled(count > 0)
@@ -1283,6 +1443,7 @@ class RecordingBrowser(RecordingChromeMixin, QWidget):
             if state.get("calibration")
             else None
         )
+        self._calibration_origin = str(state.get("calibration_origin", "")) if self.calibration else ""
         self._calibration_key = None
         self.overlay.setChecked(bool(state.get("overlay")))
         self.undistort.setChecked(bool(state.get("undistort")))
@@ -1311,6 +1472,8 @@ class RecordingBrowser(RecordingChromeMixin, QWidget):
             self._refresh_cloud_display()
 
     def cancel(self):
+        self.exporter.cancel()
+        self._prefetch_timer.stop()
         self._stopping = True
         self._pending = None
         self._reload_topics.clear()
@@ -1320,12 +1483,14 @@ class RecordingBrowser(RecordingChromeMixin, QWidget):
             self._worker.requestInterruption()
 
     def clear(self):
+        self._clear_prepared()
         self.tracking.clear()
         self._cache.clear()
         self._cache_bytes = 0
         self._page_offsets.clear()
         self._page_positions.clear()
         self.calibration = None
+        self._calibration_origin = ""
         self._calibration_key = None
         self.set_entries([])
 
@@ -1335,3 +1500,6 @@ class RecordingBrowser(RecordingChromeMixin, QWidget):
         self.cancel()
         self.left.stop()
         self.right.stop()
+
+    def background_threads(self):
+        return [worker for worker in (self._worker, self.exporter.worker) if worker is not None]

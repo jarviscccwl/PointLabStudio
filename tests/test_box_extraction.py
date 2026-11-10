@@ -49,8 +49,7 @@ def test_extract_empty_and_cancelled_never_return_partial_cloud():
     assert progress and progress[-1] < 1
 
 
-def test_batch_writes_original_frames_fields_and_manifest(tmp_path):
-    import json
+def test_batch_writes_only_named_cloud_files_with_original_frame_numbers(tmp_path):
     from core.box_extraction import extract_track
     from core.io.native_io import read_pcd
     from core.object_tracking import Observation
@@ -62,21 +61,20 @@ def test_batch_writes_original_frames_fields_and_manifest(tmp_path):
     source.frames[10].value.fields["descriptor"] = ScalarField("descriptor", np.arange(400, dtype=np.float64).reshape(100, 4) / 7)
     observations = [Observation(10, Box3D((0, 0, 0), (2, 2, 2)), True),
                     Observation(12, Box3D((.2, 0, 0), (2, 2, 2)), False)]
-    output = extract_track(source, "cloud", observations, tmp_path, "tree")
-    manifest = json.loads((output / "index.json").read_text(encoding="utf-8"))
-    assert [frame["frame_index"] for frame in manifest["frames"]] == [10, 12]
+    output = extract_track(source, "cloud", observations, tmp_path / "路边树.pcd", "tree")
+    assert [p.name for p in output] == ["路边树_000011.pcd", "路边树_000013.pcd"]
     assert source.reads == [10, 12]
-    for record in manifest["frames"]:
-        cloud = read_pcd(output / record["file"])
-        np.testing.assert_allclose(cloud.xyz, source.frames[record["frame_index"]].value.xyz)
-        assert record["point_count"] == 100
-    np.testing.assert_array_equal(read_pcd(output / manifest["frames"][0]["file"]).field("ring"), np.arange(100))
-    restored = read_pcd(output / manifest["frames"][0]["file"])
+    for path, index in zip(output, [10, 12]):
+        cloud = read_pcd(path)
+        np.testing.assert_allclose(cloud.xyz, source.frames[index].value.xyz)
+        assert cloud.point_count == 100
+    np.testing.assert_array_equal(read_pcd(output[0]).field("ring"), np.arange(100))
+    restored = read_pcd(output[0])
     for name in ("ring", "time_ns", "descriptor"):
         expected = source.frames[10].value.field(name)
         assert restored.field(name).dtype == expected.dtype
         np.testing.assert_array_equal(restored.field(name), expected)
-    assert len(list(tmp_path.iterdir())) == 1
+    assert set(tmp_path.iterdir()) == set(output)
 
 
 @pytest.mark.parametrize("failure", ["cancel", "changed", "read_error"])
@@ -98,6 +96,40 @@ def test_batch_never_publishes_partial_files(tmp_path, failure):
             source.token = "modified"
     observations = [Observation(i, Box3D((0, 0, 0), (2, 2, 2)), True) for i in (10, 11)]
     with pytest.raises((OperationCancelled, ValueError, OSError)):
-        extract_track(source, "cloud", observations, tmp_path, "tree", token="initial",
+        extract_track(source, "cloud", observations, tmp_path / "tree.pcd", "tree", token="initial",
                       cancel=lambda: failure == "cancel" and bool(source.reads), progress=progress)
     assert not list(tmp_path.iterdir())
+
+
+def test_single_extraction_keeps_custom_name_and_skips_empty_frames(tmp_path):
+    from core.box_extraction import extract_track
+    from core.object_tracking import Observation
+    from test_object_tracking_ui import MemorySource
+
+    source = MemorySource()
+    target = tmp_path / "单棵树.ply"
+    observation = Observation(10, Box3D((0, 0, 0), (2, 2, 2)))
+    assert extract_track(source, "cloud", [observation], target, "tree") == (target,)
+    original = target.read_bytes()
+    with pytest.raises(FileExistsError):
+        extract_track(source, "cloud", [observation], target, "tree")
+    assert target.read_bytes() == original
+    empty = Observation(11, Box3D((100, 0, 0), (2, 2, 2)))
+    assert extract_track(source, "cloud", [empty], tmp_path / "empty.pcd", "tree") == ()
+    assert list(tmp_path.iterdir()) == [target]
+
+
+def test_overwrite_empty_frame_fails_without_leaving_a_stale_frame_in_new_batch(tmp_path):
+    from core.box_extraction import extract_track
+    from core.object_tracking import Observation
+    from test_object_tracking_ui import MemorySource
+
+    source = MemorySource()
+    observations = [Observation(i, Box3D((0, 0, 0), (2, 2, 2))) for i in (10, 11)]
+    target = tmp_path / "tree.pcd"
+    outputs = extract_track(source, "cloud", observations, target, "tree")
+    originals = {p: p.read_bytes() for p in outputs}
+    observations[1] = Observation(11, Box3D((100, 0, 0), (2, 2, 2)))
+    with pytest.raises(ValueError, match="空框"):
+        extract_track(source, "cloud", observations, target, "tree", overwrite=True)
+    assert {p: p.read_bytes() for p in tmp_path.iterdir()} == originals

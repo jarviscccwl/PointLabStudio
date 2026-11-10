@@ -4,12 +4,17 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import unittest
 from dataclasses import replace
+import json
+from pathlib import Path
+import tempfile
+from unittest.mock import patch
 
 import numpy as np
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QApplication
 
 from core.calibration import CameraCalibration
+from core.calibration_files import read_calibration_bundle
 from core.io.recording_types import FrameData
 from core.model.entities import CloudEntity, ScalarField
 from core.object_tracking import Box3D, ObjectTrack, Observation
@@ -229,7 +234,8 @@ class FusionBrowserTests(unittest.TestCase):
         self.calibrate()
         browser = self.browser
         entry = browser.entry(browser.primary.currentData())
-        track = ObjectTrack("target", "树", {0: Observation(0, Box3D((0, 0, 5), (2, 2, 2)))})
+        track = ObjectTrack("target", "树", {0: Observation(0, Box3D((0, 0, 5), (2, 2, 2)))},
+                            category="树木")
         browser.tracking._streams[browser.tracking._key(entry)] = {
             "signature": browser.tracking._entry_signature(entry), "tracks": {track.id: track}}
         browser.tracking._refresh()
@@ -240,6 +246,8 @@ class FusionBrowserTests(unittest.TestCase):
         self.assertEqual(browser.left.frame.kind, "image")
         self.assertEqual(browser.right.cloud.color_mode, "rgb")
         self.assertEqual(len(browser.left.image.projected_boxes), 1)
+        self.assertEqual(browser.left.image.projected_boxes[0]["category"], "树木")
+        self.assertEqual(browser.right.cloud_view.boxes[0]["category"], "树木")
 
     def test_fusion_flags_and_display_preferences_round_trip(self):
         self.load()
@@ -255,6 +263,73 @@ class FusionBrowserTests(unittest.TestCase):
         self.assertTrue(browser.calibration_panel.colorize.isChecked())
         self.assertEqual(browser.left.cloud.color_mode, "rgb")
         self.assertEqual(browser.colormap, "viridis")
+
+    def test_manual_intrinsics_refresh_projection_and_boxes_and_persist_after_reload(self):
+        self.load()
+        self.calibrate()
+        browser = self.browser
+        entry = browser.entry(browser.primary.currentData())
+        track = ObjectTrack("target", "树", {0: Observation(0, Box3D((0, 0, 5), (2, 2, 2)))})
+        browser.tracking._streams[browser.tracking._key(entry)] = {
+            "signature": browser.tracking._entry_signature(entry), "tracks": {track.id: track}}
+        browser.tracking._refresh()
+        browser.overlay.setChecked(True)
+        browser.calibration_panel.colorize.setChecked(True)
+        self.idle()
+        segments = browser.right.image.projected_boxes[0]["segments"].copy()
+        updated = replace(browser.calibration, K=np.array([[50., 0, 55], [0, 50, 42], [0, 0, 1]]))
+        browser._apply_calibration(updated, "手动修正")
+        self.idle()
+        self.assertFalse(np.array_equal(segments, browser.right.image.projected_boxes[0]["segments"]))
+        self.assertEqual(browser._display_calibration.K[0, 0], 50)
+        self.assertEqual(browser.left.cloud.color_mode, "rgb")
+        saved = browser.state()
+        for action in (lambda: browser.position.setValue(2), browser.reload_topic,
+                       lambda: browser.restore_state(saved), browser.swap_views):
+            action()
+            self.idle()
+            np.testing.assert_array_equal(browser.calibration.K, updated.K)
+            self.assertIn("手动修正", browser.calibration_panel.calibration_label.text())
+
+    def test_manual_calibration_disables_automatic_camera_info_replacement(self):
+        self.load()
+        info = {"K": [[40, 0, 50], [0, 40, 40], [0, 0, 1]], "D": [], "width": 100, "height": 80}
+        camera_source = MemorySource({"camera": [FrameData("camera_info", info, i * 10**9, i * 10**9)
+                                                 for i in range(3)]})
+        camera_source.path += ".camera"
+        browser = self.browser
+        browser.set_entries(browser.entries + [BrowserStream(camera_source, stream, camera_source.index[stream.id])
+                                               for stream in camera_source.info.streams])
+        browser.camera.setCurrentIndex(_find_key(browser.camera, (camera_source.path, "camera")))
+        self.idle()
+        self.assertEqual(browser.calibration.K[0, 0], 40)
+        updated = replace(browser.calibration, K=np.array([[60., 0, 55], [0, 60, 42], [0, 0, 1]]))
+        browser._apply_calibration(updated, "手动修正")
+        browser.position.setValue(2)  # Also invalidates an in-flight refresh.
+        self.idle()
+        self.assertIsNone(browser.camera.currentData())
+        self.assertEqual(browser.calibration.K[0, 0], 60)
+        self.assertIsNotNone(browser.state()["calibration"])
+
+    def test_apply_calibration_updates_panel_even_before_data_is_loaded(self):
+        value = CameraCalibration(np.eye(3), [], 100, 80)
+        self.browser._apply_calibration(value, "新建内参")
+        self.assertTrue(self.browser.calibration_panel.save_button.isEnabled())
+        self.assertIn("新建内参", self.browser.calibration_panel.calibration_label.text())
+
+    def test_export_preserves_manual_origin_and_candidate_validation_status(self):
+        self.load()
+        self.calibrate()
+        self.browser._apply_calibration(self.browser.calibration, "手动修正内参；外参 candidate：验证 failed")
+        self.idle()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "calibration.json"
+            with patch("ui.widgets.recording_browser.QFileDialog.getSaveFileName", return_value=(str(path), "")):
+                self.browser._save_calibration()
+            document = read_calibration_bundle(str(path)).documents[0]
+            self.assertIn("手动修正", document.status)
+            self.assertIn("failed", document.status)
+            self.assertIn("calibration_source", json.loads(path.read_text(encoding="utf-8")))
 
 
 if __name__ == '__main__':

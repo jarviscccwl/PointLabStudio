@@ -10,9 +10,22 @@ from dataclasses import dataclass
 import json
 from operator import index
 from pathlib import Path
+import re
+import tomllib
 
 import numpy as np
 import yaml
+
+
+INTRINSIC_FIELDS = ("K", "k", "camera_matrix", "D", "d", "distortion_coefficients",
+                    "width", "image_width", "height", "image_height", "distortion_model")
+TRANSFORM_DIRECTIONS = {
+    "T_camera_lidar": "lidar_to_camera", "T_C_L": "lidar_to_camera",
+    "T_lidar_camera": "camera_to_lidar", "T_L_C": "camera_to_lidar",
+    "transform": None, "T": None, "extrinsics": None, "extrinsic_matrix": None,
+}
+EXTRINSIC_FIELDS = (*TRANSFORM_DIRECTIONS, "transform_direction", "transform_convention",
+                    "translation_units", "translation_unit", "length_unit")
 
 
 def _matrix(value, shape: tuple[int, int], name: str) -> np.ndarray:
@@ -64,6 +77,53 @@ def _transform(value, name: str = "T_camera_lidar") -> np.ndarray:
     return matrix
 
 
+def extrinsics_from_pose(translation_m, rotation_deg) -> np.ndarray:
+    """Build lidar → optical-camera extrinsics from metres and XYZ degrees.
+
+    Right-handed active rotations about fixed X, Y, Z axes, applied in that
+    order to column vectors: R = Rz(yaw) @ Ry(pitch) @ Rx(roll). Translation
+    is expressed in camera axes: p_camera = R @ p_lidar + t.
+    """
+    try:
+        translation = np.asarray(translation_m, dtype=np.float64)
+        angles = np.asarray(rotation_deg, dtype=np.float64)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ValueError("平移与旋转角必须各包含 3 个有限数值。") from error
+    if (translation.shape != (3,) or angles.shape != (3,)
+            or not np.isfinite(translation).all() or not np.isfinite(angles).all()):
+        raise ValueError("平移与旋转角必须各包含 3 个有限数值。")
+    # Modulo first also bounds finite but extremely large user input.
+    roll, pitch, yaw = np.deg2rad(np.remainder(angles, 360.0))
+    cr, cp, cy = np.cos([roll, pitch, yaw])
+    sr, sp, sy = np.sin([roll, pitch, yaw])
+    matrix = np.eye(4)
+    matrix[:3, :3] = [[cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
+                     [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
+                     [-sp, cp * sr, cp * cr]]
+    matrix[:3, 3] = translation
+    return _transform(matrix)
+
+
+def pose_from_extrinsics(transform) -> tuple[np.ndarray, np.ndarray]:
+    """Return metre translation and fixed-axis XYZ angles in degrees.
+
+    Euler angles are not unique. At pitch ±90°, choose yaw = 0. Callers which
+    only display/edit a transform should retain the original matrix until an
+    angle is edited, avoiding roundoff from merely opening a dialog.
+    """
+    matrix = _transform(transform)
+    rotation = matrix[:3, :3]
+    cos_pitch = np.hypot(rotation[0, 0], rotation[1, 0])
+    pitch = np.arctan2(-rotation[2, 0], cos_pitch)
+    if cos_pitch > 1e-10:
+        roll = np.arctan2(rotation[2, 1], rotation[2, 2])
+        yaw = np.arctan2(rotation[1, 0], rotation[0, 0])
+    else:
+        roll = np.arctan2(-rotation[1, 2], rotation[1, 1])
+        yaw = 0.0
+    return matrix[:3, 3].copy(), np.rad2deg([roll, pitch, yaw])
+
+
 @dataclass
 class CameraCalibration:
     """Validated optical-camera intrinsics and optional explicit extrinsics.
@@ -100,6 +160,12 @@ class CameraCalibration:
         if coefficients.ndim != 1 or not np.isfinite(coefficients).all():
             raise ValueError("D must be a finite vector of distortion coefficients.")
         lengths = {"plumb_bob": (0, 4, 5), "rational_polynomial": (8,), "equidistant": (4,)}
+        if self.distortion_model == "radtan5" and coefficients.size != 5:
+            raise ValueError("radtan5 requires all 5 distortion coefficients.")
+        if isinstance(self.distortion_model, str):
+            self.distortion_model = {
+                "radtan5": "plumb_bob", "radtan": "plumb_bob", "fisheye": "equidistant",
+            }.get(self.distortion_model, self.distortion_model)
         if not isinstance(self.distortion_model, str) or self.distortion_model not in lengths:
             raise ValueError(
                 "distortion_model must be plumb_bob, rational_polynomial or equidistant."
@@ -123,6 +189,46 @@ def _field(data: dict, names: tuple[str, ...], default=None):
     return default
 
 
+def _read_extrinsics(data, default=None):
+    factors = {"m": 1.0, "metre": 1.0, "meter": 1.0, "cm": .01, "mm": .001}
+    units = [data[name] for name in ("translation_units", "translation_unit", "length_unit")
+             if name in data] or ["m"]
+    if any(not isinstance(unit, str) or unit not in factors for unit in units):
+        raise ValueError("translation_units must be 'm', 'cm' or 'mm' (default 'm').")
+    if len({factors[unit] for unit in units}) > 1:
+        raise ValueError("Conflicting translation_units / translation_unit / length_unit.")
+    names = [name for name in TRANSFORM_DIRECTIONS if data.get(name) is not None]
+    supplied_direction = data.get("transform_direction")
+    if supplied_direction is not None and supplied_direction not in ("lidar_to_camera", "camera_to_lidar"):
+        raise ValueError("transform_direction must be 'lidar_to_camera' or 'camera_to_lidar'.")
+    if supplied_direction is None:
+        convention = re.sub(r"\s+", "", str(data.get("transform_convention", "")))
+        if convention == "p_camera_optical=R_camera_lidar*p_lidar+t_camera_lidar":
+            supplied_direction = "lidar_to_camera"
+    result = None
+    for name in names:
+        direction = TRANSFORM_DIRECTIONS[name]
+        if direction is None:
+            direction = supplied_direction
+        elif (len(names) == 1 and supplied_direction is not None
+              and supplied_direction != direction):
+            raise ValueError(f"transform_direction conflicts with the direction named by {name}.")
+        if direction not in ("lidar_to_camera", "camera_to_lidar"):
+            raise ValueError("Generic transform requires transform_direction 'lidar_to_camera' "
+                             "or 'camera_to_lidar'.")
+        matrix = _transform(data[name], name)
+        matrix[:3, 3] *= factors[units[0]]
+        if direction == "camera_to_lidar":
+            matrix = np.linalg.inv(matrix)
+        if result is not None and not np.allclose(matrix, result, rtol=0, atol=3e-6):
+            raise ValueError(f"Extrinsic matrices conflict: {name} is inconsistent with {names[0]}.")
+        if result is None:
+            result = matrix
+    if result is not None:
+        return result
+    return None if "T_camera_lidar" in data and data["T_camera_lidar"] is None else default
+
+
 def calibration_from_dict(data: dict, base: CameraCalibration | None = None) -> CameraCalibration:
     """Read ROS CameraInfo/calibration fields or the simple workspace schema.
 
@@ -133,48 +239,19 @@ def calibration_from_dict(data: dict, base: CameraCalibration | None = None) -> 
     Extrinsics accept T_camera_lidar or inverse T_lidar_camera, each 4x4 or flat
     sixteen. Generic transform/T/extrinsics matrices require transform_direction
     equal to lidar_to_camera or camera_to_lidar. Named matrices already specify
-    direction. Supply at most one transform. translation_units accepts m, cm or
-    mm and defaults to m. Values are normalized to metres. A base allows loading
+    direction. Redundant named transforms must agree after inversion. Short
+    names T_C_L/T_L_C are supported. translation_units (or translation_unit /
+    length_unit) accepts m, metre, meter, cm or mm and defaults to m. A base allows loading
     an extrinsics-only file alongside CameraInfo intrinsics, without mutation.
     """
     if not isinstance(data, dict):
         raise ValueError(
             "Calibration must be an object containing camera intrinsics and/or an explicit transform."
         )
+    if not any(name in data for name in (*INTRINSIC_FIELDS, *TRANSFORM_DIRECTIONS)):
+        raise ValueError("No recognized camera calibration fields in this document.")
     defaults = calibration_to_dict(base) if base is not None else {}
-    unit = data.get("translation_units", "m")
-    factors = {"m": 1.0, "cm": 0.01, "mm": 0.001}
-    if not isinstance(unit, str) or unit not in factors:
-        raise ValueError("translation_units must be 'm', 'cm' or 'mm' (default 'm').")
-    transform_names = [
-        name for name in ("T_camera_lidar", "T_lidar_camera", "transform", "T", "extrinsics")
-        if name in data and data[name] is not None
-    ]
-    if len(transform_names) > 1:
-        raise ValueError("Supply one extrinsic matrix, T_camera_lidar or T_lidar_camera.")
-    extrinsics = defaults.get("T_camera_lidar")
-    if transform_names:
-        name = transform_names[0]
-        direction = {
-            "T_camera_lidar": "lidar_to_camera", "T_lidar_camera": "camera_to_lidar"
-        }.get(name)
-        supplied_direction = data.get("transform_direction")
-        if direction is None:
-            direction = supplied_direction
-        elif supplied_direction is not None and supplied_direction != direction:
-            raise ValueError(
-                f"transform_direction conflicts with the direction named by {name}."
-            )
-        if direction not in ("lidar_to_camera", "camera_to_lidar"):
-            raise ValueError(
-                "Generic transform requires transform_direction 'lidar_to_camera' or 'camera_to_lidar'."
-            )
-        extrinsics = _transform(data[name], name)
-        extrinsics[:3, 3] *= factors[unit]
-        if direction == "camera_to_lidar":
-            extrinsics = np.linalg.inv(extrinsics)
-    elif "T_camera_lidar" in data and data["T_camera_lidar"] is None:
-        extrinsics = None
+    extrinsics = _read_extrinsics(data, defaults.get("T_camera_lidar"))
     intrinsic = _field(data, ("K", "k", "camera_matrix"), defaults.get("K"))
     if intrinsic is None:
         raise ValueError(
@@ -239,22 +316,47 @@ def from_camera_info(data: dict) -> CameraCalibration:
                              calibration.distortion_model, calibration.T_camera_lidar)
 
 
-def load_calibration(path: str, base: CameraCalibration | None = None) -> CameraCalibration:
-    """Safely load a UTF-8 JSON/YAML calibration using calibration_from_dict.
+class _OpenCVSafeLoader(yaml.SafeLoader):
+    """Only extend safe YAML with OpenCV's inert matrix mapping tag."""
 
-    YAML supports standard ROS camera_matrix/data, distortion_coefficients/data,
-    image_width/image_height. JSON uses K, D, width, height and optionally an
-    explicitly directed transform. Supply ``base`` for extrinsics-only files.
-    """
-    contents = Path(path).read_text(encoding="utf-8-sig")
+
+_OpenCVSafeLoader.add_constructor(
+    "tag:yaml.org,2002:opencv-matrix",
+    lambda loader, node: loader.construct_mapping(node, deep=True),
+)
+
+
+def parse_calibration_text(contents: str, filename: str) -> dict:
+    contents = contents.lstrip("\ufeff")
+    # OpenCV writes a non-standard %YAML:1.0 directive; remove only that line.
+    contents = re.sub(r"^%YAML:1\.0\s*\r?\n", "", contents, count=1)
     try:
-        if Path(path).suffix.lower() == ".json":
-            data = json.loads(contents)
-        else:
-            data = yaml.safe_load(contents)
-    except (json.JSONDecodeError, yaml.YAMLError) as error:
-        raise ValueError(f"Cannot parse calibration file {Path(path).name}: {error}") from error
-    return calibration_from_dict(data, base=base)
+        suffix = Path(filename).suffix.lower()
+        data = (json.loads(contents) if suffix == ".json" else tomllib.loads(contents)
+                if suffix == ".toml" else yaml.load(contents, Loader=_OpenCVSafeLoader))
+    except (json.JSONDecodeError, yaml.YAMLError, tomllib.TOMLDecodeError) as error:
+        raise ValueError(f"Cannot parse calibration file {Path(filename).name}: {error}") from error
+    if not isinstance(data, dict):
+        raise ValueError("Calibration must contain a mapping of parameter names and values.")
+    return data
+
+
+def load_calibration(path: str, base: CameraCalibration | None = None) -> CameraCalibration:
+    """Safely load one explicitly described calibration in a supported format.
+
+    Multiple candidates and untyped matrices require choices in the import
+    dialog. Supply ``base`` for an extrinsics-only file. Import locally to keep
+    the data model independent of the bundle reader during module loading.
+    """
+    from core.calibration_files import read_calibration_bundle
+
+    bundle = read_calibration_bundle(path)
+    if len(bundle.documents) != 1:
+        raise ValueError("文件包含多组标定，请在导入窗口选择需要的内参和外参。")
+    document = bundle.documents[0]
+    if document.requires_interpretation:
+        raise ValueError("矩阵说明不完整，请在导入窗口选择类型、原始方向和单位。")
+    return calibration_from_dict(document.data, base=base)
 
 
 def calibration_to_dict(calibration: CameraCalibration) -> dict:

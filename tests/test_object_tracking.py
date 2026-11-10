@@ -48,6 +48,19 @@ def test_models_round_trip_original_frame_indices_and_manual_status():
     assert Observation.from_dict(track.observations[105].to_dict()).box == box
 
 
+def test_track_category_roundtrip_and_legacy_compatibility():
+    legacy = {"id": "stable-target", "name": "路边树", "observations": []}
+    restored = ObjectTrack.from_dict(legacy)
+    assert restored.category == ""
+    restored.category = "树木"
+    payload = json.loads(json.dumps(restored.to_dict(), ensure_ascii=False))
+    assert payload["category"] == "树木"
+    assert ObjectTrack.from_dict(payload) == restored
+    assert ObjectTrack("custom", "目标", category="  路灯  ").category == "路灯"
+    with pytest.raises(ValueError, match="category"):
+        ObjectTrack.from_dict({**legacy, "category": ["树木"]})
+
+
 @pytest.mark.parametrize("center,size,yaw", [
     ([0, 0], [1, 1, 1], 0),
     ([0, 0, float("nan")], [1, 1, 1], 0),

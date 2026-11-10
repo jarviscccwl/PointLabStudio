@@ -47,6 +47,16 @@ class CalibrationPanelTests(unittest.TestCase):
         self.assertIn("内参", self.panel.calibration_label.text())
         self.assertIn("外参", self.panel.calibration_label.text())
 
+    def test_extrinsic_edit_requires_intrinsics_and_secondary_actions_remain_connected(self):
+        self.assertFalse(self.panel.edit_extrinsics_button.isEnabled())
+        self.panel.set_calibration(camera())
+        self.assertTrue(self.panel.edit_extrinsics_button.isEnabled())
+        events = []
+        self.panel.save_button.clicked.connect(lambda: events.append("save"))
+        actions = self.panel.more_button.menu().actions()
+        next(action for action in actions if action.text() == self.panel.save_button.text()).trigger()
+        self.assertEqual(events, ["save"])
+
     def test_intrinsics_enable_undistortion_without_inventing_extrinsics(self):
         calibration = camera()
         self.panel.set_calibration(calibration, "包内相机", has_image=True, has_cloud=True)

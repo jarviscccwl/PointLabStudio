@@ -1,10 +1,47 @@
 # 文件整理与手动清理指南
 
-盘点日期：2026-11-09。项目目录为 `C:\Users\lenovo\Desktop\pointlabstudio`。源码、测试、资源、说明已归入对应目录；`dist` 仅保留包含框内提取与性能优化的最新 v2.0.0 EXE 及同名 `.sha256`。旧版 v1.3.0 EXE 已删除，旧 v2.0.0 已被验证后的新成品替换。截图、解码报告和诊断副本位于项目外的聊天可视化目录。
+最近盘点日期：2026-11-10。项目目录为 `C:\Users\lenovo\Desktop\pointlabstudio`。源码、测试、资源、说明已归入对应目录；当前成品为 `dist/PointLabStudio-v2.1.0-Windows-x64.exe` 及同名 `.sha256`，已包含标定、命名导出、标签和界面更新。旧 v2.0.0 EXE 的自动删除被拒绝，仍保留；v1.3.0 EXE 已在更早阶段删除。截图、解码报告和诊断副本位于项目外的聊天可视化目录。
 
-此前删除过程目录、缓存、诊断副本及验收专用配置的操作被自动审批拒绝，返回 `blocked by policy`，没有提供更具体原因。未重试这些删除，也未换用其他方式绕过。本轮复查时，项目根目录下 `build` 和旧 `.tmp` 均不存在；新成品的构建和验收在项目外进行。
+此前删除过程目录、缓存、诊断副本及验收专用配置的操作被自动审批拒绝，返回 `blocked by policy`，没有提供更具体原因。未重试这些删除，也未换用其他方式绕过。本轮复查时，项目根目录下 `build` 和旧 `.tmp` 均不存在；此前成品构建与本轮验收均在项目外进行。
 
-## 最新 preview 版打包：可优先手动清理
+## v2.1.0 打包与源码交付（2026-11-10）
+
+新成品已放入项目 `dist` 并核对校验值。源码上传目标为 GitHub `preview`，不上传 EXE、缓存、数据包或本机验收文件。详细构建、测试与校验信息见 [v2.1.0 交付说明](release-v2.1.0-2026-11-10.md)。
+
+自动审批拒绝了两项清理操作：删除旧成品，以及删除本轮过程目录。均在命令执行前仅返回 `blocked by policy`，没有更具体原因；未重试或换方式执行。以下旧成品可以手动删除，保留同目录 **v2.1.0** 文件：
+
+```text
+C:\Users\lenovo\Desktop\pointlabstudio\dist\PointLabStudio-v2.0.0-Windows-x64.exe
+C:\Users\lenovo\Desktop\pointlabstudio\dist\PointLabStudio-v2.0.0-Windows-x64.exe.sha256
+```
+
+本轮所有验收进程已退出，启动器创建的运行目录已自行清空。以下目录均位于本轮专用根目录内，不参与 `dist` 成品运行，共约 **692.35 MiB**，可以手动删除：
+
+```text
+C:\Users\lenovo\.codex\visualizations\2026\11\08\01a1b9ba-c0ef-74a2-aab5-1854d236c5cc\release-v2.1.0\build
+C:\Users\lenovo\.codex\visualizations\2026\11\08\01a1b9ba-c0ef-74a2-aab5-1854d236c5cc\release-v2.1.0\staged
+C:\Users\lenovo\.codex\visualizations\2026\11\08\01a1b9ba-c0ef-74a2-aab5-1854d236c5cc\release-v2.1.0\exe-settings
+C:\Users\lenovo\.codex\visualizations\2026\11\08\01a1b9ba-c0ef-74a2-aab5-1854d236c5cc\release-v2.1.0\exe-settings-visible
+C:\Users\lenovo\.codex\visualizations\2026\11\08\01a1b9ba-c0ef-74a2-aab5-1854d236c5cc\release-v2.1.0\exe-temp
+C:\Users\lenovo\.codex\visualizations\2026\11\08\01a1b9ba-c0ef-74a2-aab5-1854d236c5cc\release-v2.1.0\test-settings
+C:\Users\lenovo\.codex\visualizations\2026\11\08\01a1b9ba-c0ef-74a2-aab5-1854d236c5cc\release-v2.1.0\exports
+```
+
+`build` 约 471.07 MiB，`staged` 约 220.31 MiB，其余为独立设置与两份测试动画。其父目录 `release-v2.1.0` 中的日志、验收工作区、源码传输副本、截图及脚本均只用于复查；不需要验证证据时，也可手动删除整个 **release-v2.1.0** 子目录。不要删除其父级目录、桌面标定 ZIP 或 D 盘原始数据。项目根目录的旧 `label-qa.gif` 仍可按本文末尾说明删除。
+
+## 本次整体使用与界面复核（2026-11-10，打包前）
+
+本轮新增代码、测试和文档已放入对应目录，没有新增根目录过程脚本、EXE 或构建目录。原生窗口验收使用独立临时配置，退出后已自动清理。测试禁用字节码和测试缓存写入；此前被拒绝的旧缓存与测试 GIF 未重试，仍可按下文手动删除。
+
+本轮截图、验证脚本、运行日志和检查报告集中在以下目录，不参与软件运行；确认不需要复查证据后，可以手动删除整个这个子目录：
+
+```text
+C:\Users\lenovo\.codex\visualizations\2026\11\08\01a1b9ba-c0ef-74a2-aab5-1854d236c5cc\workspace-polish
+```
+
+本轮读取 D 盘采集包与桌面标定 ZIP，未修改原文件；验收使用的 `export-labels\label-workspace.pls` 也未保存改动。项目根目录仍保留上一轮的 `label-qa.gif`，它是可删除的测试动画；此前归档它的操作与配置清理一起被自动审批拒绝，具体路径见本文末尾。
+
+## 历史 v2.0.0 preview 版打包：可手动清理
 
 最新 EXE 已交付到项目 `dist` 并核对 SHA-256；验收主程序与启动子进程均已退出。运行日志已另存为 `final-exe-ui.log`。以下四个过程目录不参与交付 EXE 运行，共约 **689.72 MiB**，可以手动删除：
 
@@ -124,7 +161,7 @@ C:\Users\lenovo\Desktop\pointlabstudio\tests\__pycache__
 | `apps`、`core`、`ui`、`resources` | 软件源码及资源，仅其中上列缓存目录可删 |
 | `tests`、`docs`、`packaging` | 回归测试、使用说明、验证记录及构建脚本 |
 | `run.py`、`start.bat`、依赖及项目配置文件 | 启动和维护软件 |
-| `dist\PointLabStudio-v2.0.0-Windows-x64.exe` 及同名 `.sha256` | 最新融合版交付成品及文件校验值 |
+| `dist\PointLabStudio-v2.1.0-Windows-x64.exe` 及同名 `.sha256` | 当前交付成品及校验值；旧版 v2.0.0 可按上文删除 |
 | 自己保存的 `.pls` 和同名 `.assets` | 工作区、标注和处理结果 |
 | `D:\2026_10_14` | 用户原始采集数据，保持原样 |
 
@@ -166,3 +203,50 @@ C:\Users\lenovo\.codex\visualizations\2026\11\08\01a1b9ba-c0ef-74a2-aab5-1854d23
 `C:\Users\lenovo\.codex\visualizations\2026\11\08\01a1b9ba-c0ef-74a2-aab5-1854d236c5cc\usability`
 
 它也不参与程序运行。确认不再需要截图、性能证据和演示标注后，可删除这个 `usability` 子目录；不要据此删除整个 `.codex` 或其他聊天目录。演示 `.pls` 只引用原始采集数据，删除演示文件不会删除 D 盘原始数据。
+
+## 手动内参修正（2026-11-09）
+
+本轮源码、回归测试和使用说明已留在项目对应目录，没有新增打包输出。以下验收目录位于项目外，不参与软件运行：
+
+```text
+C:\Users\lenovo\.codex\visualizations\2026\11\08\01a1b9ba-c0ef-74a2-aab5-1854d236c5cc\manual-calibration
+```
+
+本轮尝试删除以下项目时，自动审批返回 `blocked by policy`，整个清理命令未执行，也未换方法重试。软件验收进程已正常退出，可以手动删除该目录内的：
+
+- `settings`：测试专用设置、日志和绘制缓存。
+- `manual-edit-check.pls`：使用测试焦距的验收工作区，只引用 D 盘原始数据。
+- `native-stdout.txt`、`native-stderr.txt`：首次测试启动输出。
+- `regression.txt`：被最终 162 项检查覆盖的第一轮测试日志。
+
+`regression-final.txt`、`verification.json`、`original-files.json` 及 4 张 PNG 是本轮验收证据；确认不需要留证后，也可删除整个 `manual-calibration` 目录。不要删除其父级目录、桌面的 `内外参标定.zip` 或 D 盘原始采集包。
+
+## 区间导出与连续浏览（2026-11-10）
+
+本轮源码、测试和说明已归入 `core`、`ui`、`tests`、`docs`，未产生新 EXE 或构建目录。项目根目录没有新增一次性脚本。原先被拒绝的缓存清理未重试。
+
+验收进程已经正常退出。以下五项均是本轮生成的测试设置／导出文件，可以手动删除。自动清理在执行前被审批拒绝，仅返回 `blocked by policy`，没有更具体原因；整个命令没有执行，也未换方法重试：
+
+```text
+C:\Users\lenovo\.codex\visualizations\2026\11\08\01a1b9ba-c0ef-74a2-aab5-1854d236c5cc\fusion-sequence\native-settings
+C:\Users\lenovo\.codex\visualizations\2026\11\08\01a1b9ba-c0ef-74a2-aab5-1854d236c5cc\fusion-sequence\real-gif
+C:\Users\lenovo\.codex\visualizations\2026\11\08\01a1b9ba-c0ef-74a2-aab5-1854d236c5cc\fusion-sequence\real-mp4
+C:\Users\lenovo\.codex\visualizations\2026\11\08\01a1b9ba-c0ef-74a2-aab5-1854d236c5cc\fusion-sequence\real-png_ply
+C:\Users\lenovo\.codex\visualizations\2026\11\08\01a1b9ba-c0ef-74a2-aab5-1854d236c5cc\fusion-sequence\PointLab_20261110_003056_991_671-673
+```
+
+同目录的 `verified-workspace.pls` 使用测试外参 X 平移 0.02 m，只供验收，亦可删除。`verify_real.py` 为复现脚本，其余 JSON／日志／截图为验证证据，均不参与软件运行；不需要留证时可删除整个 `fusion-sequence` 子目录，不要删除它的父级目录。上述工作区只引用 D 盘数据，删除不会删除原始采集包。
+
+## 标签、文件命名与切帧修复（2026-11-10）
+
+本轮没有新 EXE、构建目录或根目录临时脚本。源码、测试与说明已经归入对应目录，所有验收进程已退出。尝试归档测试 GIF 并删除本轮测试配置时，自动审批拒绝了整个命令，仅返回 `blocked by policy`，没有更具体原因；命令未执行，也未换方法重试。以下三项可以直接手动删除：
+
+```text
+C:\Users\lenovo\Desktop\pointlabstudio\label-qa.gif
+C:\Users\lenovo\.codex\visualizations\2026\11\08\01a1b9ba-c0ef-74a2-aab5-1854d236c5cc\export-labels\settings
+C:\Users\lenovo\.codex\visualizations\2026\11\08\01a1b9ba-c0ef-74a2-aab5-1854d236c5cc\export-labels\native-settings
+```
+
+`label-qa.gif` 是原生保存对话框验收生成的 3 帧动画，不是软件资源。`settings` 和 `native-settings` 是独立测试配置、日志与绘制缓存，不是用户日常使用的配置。
+
+其余 `export-labels` 内容为本轮验收证据，不参与软件运行。其中 `outputs\我的同步预览.gif` 是另一项单文件导出检查，`label-workspace.pls` 和 `label-check.json` 是测试标注与工作区，均可删除。确认不需要保留验证日志和截图时，可以删除整个 `export-labels` 子目录；不要删除它的父目录、用户标定 ZIP 或 D 盘原始数据。此前被拒绝的清理项目未重试，仍按前文清单处理。

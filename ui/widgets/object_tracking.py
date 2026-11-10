@@ -1,17 +1,20 @@
 """Editable source-coordinate targets and cancellable adjacent-frame suggestions."""
 
 from copy import deepcopy
+from contextlib import nullcontext
 import json
 import math
 import os
+from pathlib import Path
+import re
 from uuid import uuid4
 
 import numpy as np
 from PySide6.QtCore import QIODevice, QObject, QSaveFile, Qt, Signal
-from PySide6.QtWidgets import QApplication, QFileDialog
+from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
 from core.io.recording_types import FrameData
-from core.box_extraction import extract_box, extract_track
+from core.box_extraction import extract_box, extract_track, track_output_paths
 from core.model.entities import CloudEntity
 from core.object_tracking import Box3D, ObjectTrack, Observation, box_corners, fit_box, track_step
 from ui.recording_tasks import RecordingTask
@@ -88,6 +91,24 @@ class ObjectTrackingController(QObject):
     def _entry(self):
         return self.browser.entry(self.browser.primary.currentData())
 
+    def _frame_loading(self):
+        worker = self.browser._worker
+        generation = getattr(self.browser, "_generation", None)
+        return (self.browser._pending is not None
+                or (worker is not None and not getattr(worker, "background", False)
+                    and getattr(worker, "request_generation", generation) == generation))
+
+    def refresh_reader_actions(self):
+        """Source-reading jobs share the reader; current-frame edits need not wait."""
+        if self.dialog is None:
+            return
+        current, track = self._current(), self._track()
+        readable = (not self.busy and self._armed is None and self.browser._worker is None
+                    and self.browser._pending is None and current is not None and track is not None
+                    and self._source_matches(current[0], notify=False))
+        self.dialog.track_button.setEnabled(readable and current[2] in track.observations)
+        self.dialog.batch_extract_action.setEnabled(readable and bool(track.observations))
+
     @staticmethod
     def _key(entry):
         return _path_key(entry.source.path), entry.stream.id
@@ -145,7 +166,6 @@ class ObjectTrackingController(QObject):
         self._message = text
         if self.dialog is not None:
             self.dialog.status.setText(text)
-            self.dialog.status.setVisible(True)
         self.notice.emit(text)
 
     def _viewport(self):
@@ -202,6 +222,8 @@ class ObjectTrackingController(QObject):
             viewport = self._armed[3]
             self._armed = None
             viewport.set_interaction_mode(None)
+            if hasattr(viewport, "clear_selection_runtime"):
+                viewport.clear_selection_runtime()
         self._restore_selection_dialog()
 
     def _restore_selection_dialog(self):
@@ -316,8 +338,8 @@ class ObjectTrackingController(QObject):
 
     def navigate(self, delta):
         current = self._current()
-        if (current is None or self.busy or self.browser._worker is not None
-                or self.browser._pending is not None or not self._source_matches(current[0])):
+        if (current is None or self.busy or self._frame_loading()
+                or not self._source_matches(current[0])):
             return False
         position = self.browser.position
         target = max(position.minimum(), min(position.maximum(), position.value() + delta))
@@ -343,8 +365,7 @@ class ObjectTrackingController(QObject):
 
     def _restore_navigation_focus(self):
         pending = self._navigation_focus
-        if (pending is None or pending["requesting"] or self.browser._worker is not None
-                or self.browser._pending is not None):
+        if pending is None or pending["requesting"] or self._frame_loading():
             return
         current = self._current()
         if current is None:
@@ -376,7 +397,7 @@ class ObjectTrackingController(QObject):
     def show_result(self, index):
         current = self._current()
         if (current is None or self.busy or self._armed is not None
-                or self.browser._worker is not None or self.browser._pending is not None
+                or self._frame_loading()
                 or not self._source_matches(current[0])):
             return False
         position = next((position for position, frame in self._result_positions() if frame == index), None)
@@ -399,7 +420,7 @@ class ObjectTrackingController(QObject):
     def focus_target(self):
         current, track, viewport = self._current(), self._track(), self._viewport()
         if (current is None or track is None or viewport is None or self.busy
-                or self.browser._worker is not None or self.browser._pending is not None
+                or self._frame_loading()
                 or not self._source_matches(current[0]) or not hasattr(viewport, "focus_entity")):
             return False
         observation = track.observations.get(current[2])
@@ -414,7 +435,7 @@ class ObjectTrackingController(QObject):
             return False
         current = self._current()
         viewport = self._viewport()
-        if self.busy or self.browser._worker is not None or self.browser._pending is not None or current is None or viewport is None:
+        if self.busy or self._frame_loading() or current is None or viewport is None:
             self._status("请等待主视图点云读取完成后框选。")
             return False
         if reframe and self._track() is None:
@@ -485,7 +506,7 @@ class ObjectTrackingController(QObject):
         tracks[target_id].observations[index] = Observation(index, box, True)
         self.selected_id = target_id
         self._disarm()
-        self._status("人工框已保存，可数值修正或关联相邻帧。")
+        self._status("人工框已保存，可选择类别、调整三视图或关联相邻帧。")
         self.changed.emit()
         self._refresh()
 
@@ -499,6 +520,21 @@ class ObjectTrackingController(QObject):
         if name and name != track.name:
             track.name = name
             self.changed.emit()
+        self._refresh()
+
+    def set_target_category(self):
+        track = self._track()
+        if self.busy or self.dialog is None or track is None:
+            return
+        if not self._source_matches(self._entry()):
+            return
+        category = self.dialog.category.currentText().strip()
+        category = "" if category == "未分类" else category
+        self.dialog.category.lineEdit().setModified(False)
+        if category != track.category:
+            track.category = category
+            self.changed.emit()
+            self._status(f"类别“{category or '未分类'}”已保存，适用于此目标的全部有框帧。")
         self._refresh()
 
     def apply_manual_edit(self):
@@ -528,7 +564,7 @@ class ObjectTrackingController(QObject):
         current, track = self._current(), self._track()
         if (not isinstance(box, Box3D) or self.busy or current is None or track is None
                 or self._armed is not None
-                or self.browser._worker is not None or self.browser._pending is not None
+                or self._frame_loading()
                 or current[2] not in track.observations or not self._source_matches(current[0])):
             return False
         track.observations[current[2]] = Observation(current[2], box, True)
@@ -555,8 +591,8 @@ class ObjectTrackingController(QObject):
 
     def extract_current(self):
         current, track = self._current(), self._track()
-        if (self.busy or self._armed is not None or self.browser._worker is not None
-                or self.browser._pending is not None or current is None or track is None
+        if (self.busy or self._armed is not None or self._frame_loading()
+                or current is None or track is None
                 or current[2] not in track.observations):
             self._status("请先在已读取的当前帧建立 3D 框，再提取框内点。")
             return False
@@ -606,7 +642,7 @@ class ObjectTrackingController(QObject):
         self._status(f"已提取 {cloud.point_count:,} 点并加入场景，可导出或继续处理；可撤销本次添加。")
         self.cloud_extracted.emit(cloud)
 
-    def extract_associated(self, directory=None):
+    def extract_associated(self, path=None, *, overwrite=False):
         current, track = self._current(), self._track()
         if (self.busy or self._armed is not None or self.browser._worker is not None
                 or self.browser._pending is not None or current is None or track is None
@@ -616,13 +652,31 @@ class ObjectTrackingController(QObject):
         self.browser.play.setChecked(False)
         snapshot = deepcopy(track)
         entry = current[0]
-        if directory is None:
-            directory = QFileDialog.getExistingDirectory(
-                self.dialog or self.browser, f"选择提取目录 · {len(snapshot.observations)} 个有框帧")
-        if not directory:
+        if path is None:
+            hold = self.browser.pause_prefetch() if hasattr(self.browser, "pause_prefetch") else nullcontext()
+            with hold:
+                name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", snapshot.name).strip(". ") or "目标"
+                path, selected_filter = QFileDialog.getSaveFileName(
+                    self.dialog or self.browser, "保存有框帧点云 · 多帧自动追加原始帧号",
+                    f"{name}.pcd", "PCD 点云 (*.pcd);;PLY 点云 (*.ply)",
+                    options=QFileDialog.DontConfirmOverwrite)
+                if path:
+                    suffix = ".ply" if "*.ply" in selected_filter else ".pcd"
+                    path = str(Path(path).with_suffix(suffix))
+                    paths = track_output_paths(path, snapshot.observations.values())
+                    existing = [p for p in paths if p.exists()]
+                    if existing:
+                        answer = QMessageBox.question(self.dialog or self.browser, "覆盖已有点云？",
+                            f"将覆盖 {len(existing)} 个同名文件：\n" + "\n".join(p.name for p in existing[:5]),
+                            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+                        if answer != QMessageBox.Yes:
+                            return False
+                        overwrite = True
+        if not path:
             return False
-        # The directory chooser runs an event loop; revalidate its captured target.
-        if self.busy or self._entry() is not entry or not self._source_matches(entry):
+        # File dialogs run an event loop; revalidate their captured target.
+        if (self.busy or self.browser._worker is not None or self.browser._pending is not None
+                or self._entry() is not entry or not self._source_matches(entry)):
             return False
         self._generation += 1
         self._disarm()
@@ -630,12 +684,13 @@ class ObjectTrackingController(QObject):
         self._committed_extraction = None
 
         def extract(cancel, progress):
-            folder = extract_track(entry.source, entry.stream.id, snapshot.observations.values(),
-                                   directory, snapshot.name, token=token, cancel=cancel, progress=progress)
+            files = extract_track(entry.source, entry.stream.id, snapshot.observations.values(),
+                                  path, snapshot.name, token=token, cancel=cancel, progress=progress,
+                                  overwrite=overwrite)
             # Cancellation after the atomic publish cannot undo a completed export.
             # Retain its location for _finished even if done is suppressed by QThread.
-            self._committed_extraction = folder
-            return folder
+            self._committed_extraction = files, len(snapshot.observations)
+            return files
 
         self.job_label = "批量提取"
         self.worker = RecordingTask(extract, self)
@@ -790,7 +845,9 @@ class ObjectTrackingController(QObject):
             return
         self.worker = None
         if self._committed_extraction is not None:
-            self._status(f"批量提取已完成：{self._committed_extraction}。可打开此文件夹查看各帧点云，时间戳见 index.json。")
+            files, total = self._committed_extraction
+            self._status(f"已保存 {len(files)} 个点云文件，跳过 {total - len(files)} 个空框。"
+                         + (f"首个文件：{files[0]}" if files else "请检查框的位置和尺寸。"))
             self._committed_extraction = None
         elif self._message == "正在取消，等待当前读取结束。":
             self._status(f"已取消{self.job_label}。")
@@ -847,7 +904,7 @@ class ObjectTrackingController(QObject):
             for track in tracks.values():
                 observation = track.observations.get(current[2])
                 if observation is not None:
-                    boxes.append({"id": track.id[:8], "name": track.name,
+                    boxes.append({"id": track.id[:8], "name": track.name, "category": track.category,
                                   **observation.box.to_dict(), "selected": track.id == self.selected_id,
                                   "manual": observation.manual})
         if viewport is not None:
@@ -866,6 +923,7 @@ class ObjectTrackingController(QObject):
         current = self._current()
         observation = track.observations.get(current[2]) if track and current else None
         dialog.name.setText(track.name if track else "")
+        dialog.set_category(track.category if track else "", track.id if track else None)
         if observation:
             for spin, value in zip(dialog.center + dialog.size, observation.box.center + observation.box.size):
                 spin.setValue(value)
@@ -873,7 +931,7 @@ class ObjectTrackingController(QObject):
             dialog.roll.setValue(math.degrees(observation.box.roll))
             dialog.pitch.setValue(math.degrees(observation.box.pitch))
             status = "人工框" if observation.manual else f"自动建议 · 几何质量 {observation.score:.3f}" if observation.score is not None else "自动建议"
-            detail = f"当前原始帧 {current[2] + 1} · {status}"
+            detail = f"当前原始帧 {current[2] + 1} · {status} · 高亮为当前帧框内点云"
         else:
             detail = "当前帧没有目标框，可返回有框帧继续关联，或在本帧重框。" if current and track else (
                 "先在主视图新建 3D 框，再关联前后帧。" if current else "请在主视图选择并读取点云。")
@@ -881,9 +939,8 @@ class ObjectTrackingController(QObject):
         if not source_current and self._entry() is not None:
             detail = "源文件不可用或已更改，请恢复连接并重新载入点云。"
         dialog.status.setText(f"{detail}\n{self._message}" if self._message else detail)
-        dialog.status.setVisible(True)
         editable = (current is not None and source_current and not self.busy and self._armed is None
-                    and self.browser._worker is None and self.browser._pending is None)
+                    and not self._frame_loading())
         identity = (self._key(current[0]), current[2], self.selected_id) if current and observation else None
         if observation and current:
             dialog.editor.set_data(current[1].value.xyz, observation.box,
@@ -899,9 +956,8 @@ class ObjectTrackingController(QObject):
         dialog.new_button.setEnabled(editable)
         dialog.reframe_button.setEnabled(editable and track is not None)
         dialog.apply_button.setEnabled(editable and observation is not None)
-        dialog.track_button.setEnabled(editable and observation is not None)
         dialog.extract_button.setEnabled(editable and track is not None and bool(track.observations))
-        dialog.batch_extract_action.setEnabled(editable and track is not None and bool(track.observations))
+        self.refresh_reader_actions()
         dialog.update_tracking_action()
         dialog.progress.setVisible(self.busy)
         dialog.cancel_button.setVisible(self.busy or self._armed is not None)
@@ -918,6 +974,7 @@ class ObjectTrackingController(QObject):
         dialog.delete_target_button.setEnabled(source_current and not self.busy and track is not None)
         dialog.targets.setEnabled(not self.busy)
         dialog.name.setEnabled(source_current and not self.busy and track is not None)
+        dialog.category.setEnabled(source_current and not self.busy and track is not None)
         for widget in dialog.center + dialog.size + dialog.rotation + [dialog.direction, dialog.count, dialog.max_distance]:
             widget.setEnabled(source_current and not self.busy)
         dialog.cancel_button.setEnabled(self.busy or self._armed is not None)

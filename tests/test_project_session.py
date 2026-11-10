@@ -2,6 +2,7 @@
 import json
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -106,6 +107,28 @@ class ProjectSessionTests(unittest.TestCase):
         self.assertFalse(self.window._has_unsaved_project())
         self.assertIsNone(self.window._project_path)
         self.assertNotIn("*", self.window.windowTitle())
+
+    def test_first_workspace_manual_calibration_is_protected_and_small_edits_are_dirty(self):
+        from core.calibration import CameraCalibration, calibration_to_dict
+        window = self.window
+        camera = SimpleNamespace(currentData=lambda: None)
+        browser = SimpleNamespace(calibration=None, camera=camera,
+                                  tracking=SimpleNamespace(has_annotations=False))
+        window.recording_browser = browser
+        window._recording_sources = {}
+        window._recording_state = lambda: {"sources": [], "browser": {
+            "calibration": calibration_to_dict(browser.calibration) if browser.calibration else None}}
+        window._project_baseline = window._project_signature()
+        self.assertFalse(window._has_unsaved_project())
+        browser.calibration = CameraCalibration([[100, 0, 50], [0, 100, 40], [0, 0, 1]], [], 100, 80)
+        self.assertTrue(window._has_unsaved_project())
+        with patch("ui.project_session.QMessageBox.question", return_value=QMessageBox.Cancel) as prompt:
+            self.assertFalse(window._confirm_unsaved_project())
+            prompt.assert_called_once()
+        window._mark_project_saved(str(self.base / "calibration.pls"))
+        self.assertFalse(window._has_unsaved_project())
+        browser.calibration.K[0, 0] += 1e-10
+        self.assertTrue(window._has_unsaved_project())
 
     def test_import_and_source_metadata_edits_are_dirty(self):
         entity = self.cloud()

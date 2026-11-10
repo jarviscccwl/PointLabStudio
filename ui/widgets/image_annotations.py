@@ -43,16 +43,24 @@ class ImageAnnotationLayer(QGraphicsItem):
                 pen.setStyle(Qt.DashLine)
             painter.setPen(pen)
             painter.drawPath(path)
-            label = str(box.get("name") or box.get("id") or "")
+            label = ""
+            if any(box.get(key) for key in ("category", "id", "name")):
+                label = " · ".join(str(value) for value in
+                                   (box.get("category") or "未分类", box.get("id"), box.get("name")) if value)
             if label:
                 rect = path.boundingRect()
-                painter.save()
-                painter.translate(rect.left(), min(self._rect.bottom() - 18 / scale,
-                                                   max(self._rect.top(), rect.top() - 22 / scale)))
-                painter.scale(1 / scale, 1 / scale)
                 metrics = painter.fontMetrics()
-                label = metrics.elidedText(label, Qt.ElideRight, 160)
+                available = max(0, min(240, int(self._rect.width() * scale) - 12))
+                label = metrics.elidedText(label, Qt.ElideRight, available)
+                if not label or self._rect.height() * scale < metrics.height() + 4:
+                    continue
                 background = QRectF(0, 0, metrics.horizontalAdvance(label) + 12, metrics.height() + 4)
+                x = max(self._rect.left(), min(rect.left(), self._rect.right() - background.width() / scale))
+                y = max(self._rect.top(), min(rect.top() - (background.height() + 4) / scale,
+                                             self._rect.bottom() - background.height() / scale))
+                painter.save()
+                painter.translate(x, y)
+                painter.scale(1 / scale, 1 / scale)
                 painter.fillRect(background, QColor(18, 22, 28, 210))
                 painter.setPen(color)
                 painter.drawText(background.adjusted(6, 0, -6, 0), Qt.AlignVCenter, label)

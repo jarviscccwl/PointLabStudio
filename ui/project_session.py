@@ -91,6 +91,10 @@ class ProjectSessionMixin:
             recordings = self._recording_state()
             recordings["browser"].pop("position", None)
             state["recordings"] = recordings
+            # Camera coefficients are user-entered full-precision values. Keep a
+            # precise signature even though viewport metadata is rounded below.
+            state["calibration_exact"] = json.dumps(
+                recordings["browser"].get("calibration"), sort_keys=True, allow_nan=False)
         browser = getattr(self, "frame_browser", None)
         if browser is not None:
             state["browser"] = {
@@ -102,10 +106,12 @@ class ProjectSessionMixin:
                           separators=(",", ":"))
 
     def _has_unsaved_project(self) -> bool:
-        # Source-only browsing is disposable; derived data and saved workspaces are not.
+        # Source-only browsing is disposable; corrected calibration is authored data.
         browser = getattr(self, "recording_browser", None)
         annotations = browser is not None and browser.tracking.has_annotations
-        if (not self._project_path and not self.meshes and not annotations
+        manual_calibration = (browser is not None and browser.calibration is not None
+                              and browser.camera.currentData() is None)
+        if (not self._project_path and not self.meshes and not annotations and not manual_calibration
                 and all(e.path for e in self.entities)):
             return False
         return self._project_signature() != self._project_baseline
@@ -127,7 +133,7 @@ class ProjectSessionMixin:
             return True
         choice = QMessageBox.question(
             self, "保存工作区", "是否保存当前工作区，以便下次继续？\n\n"
-            "工作区（.pls）记录文件列表、视角和处理结果，不会覆盖源点云。\n"
+            "工作区（.pls）记录文件列表、视角、修正后的标定、标注和处理结果，不会覆盖源文件。\n"
             "不保存将丢弃本次工作区更改；尚未导出的处理结果也会丢失。\n"
             "如需给其他软件使用，请先取消，再选择「导出当前点云」。",
             QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,

@@ -3,7 +3,7 @@
 import json
 
 import numpy as np
-from PySide6.QtCore import QAbstractTableModel, QModelIndex, QPointF, Qt, QTimer, Signal
+from PySide6.QtCore import QAbstractTableModel, QModelIndex, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QColor,
     QImage,
@@ -88,6 +88,21 @@ def image_to_qimage(array):
     ).copy()
 
 
+def render_projection_image(array, pixels=None, colors=None, point_size=2, opacity=.7):
+    """Paint onto an owned QImage; safe to prepare in a worker, without widgets."""
+    image = image_to_qimage(array)
+    if pixels is not None and len(pixels):
+        painter = QPainter(image)
+        if colors is None:
+            colors = np.repeat(np.array([[40, 230, 140]], np.uint8), len(pixels), axis=0)
+        palette, groups = np.unique(colors, axis=0, return_inverse=True)
+        for index, rgb in enumerate(palette):
+            painter.setPen(QPen(QColor(*map(int, rgb), round(opacity * 255)), point_size))
+            painter.drawPoints(QPolygonF([QPointF(float(x), float(y)) for x, y in pixels[groups == index]]))
+        painter.end()
+    return image
+
+
 class ImageView(QGraphicsView):
     def __init__(self):
         super().__init__()
@@ -104,19 +119,10 @@ class ImageView(QGraphicsView):
         self.projected_boxes = list(boxes)
         self._box_layer.set_boxes(self.projected_boxes, self._pixmap.boundingRect())
 
-    def set_image(self, array, pixels=None, colors=None, point_size=2, opacity=.7):
+    def set_image(self, array, pixels=None, colors=None, point_size=2, opacity=.7, prepared_image=None):
         self.set_projected_boxes([])
-        image = image_to_qimage(array)
-        if pixels is not None and len(pixels):
-            painter = QPainter(image)
-            if colors is None:
-                colors = np.repeat(np.array([[40, 230, 140]], np.uint8), len(pixels), axis=0)
-            palette, groups = np.unique(colors, axis=0, return_inverse=True)
-            for index, rgb in enumerate(palette):
-                painter.setPen(QPen(QColor(*map(int, rgb), round(opacity * 255)), point_size))
-                painter.drawPoints(QPolygonF([QPointF(float(x), float(y))
-                                              for x, y in pixels[groups == index]]))
-            painter.end()
+        image = prepared_image if prepared_image is not None else render_projection_image(
+            array, pixels, colors, point_size, opacity)
         previous = self._pixmap.pixmap().size()
         self._pixmap.setPixmap(QPixmap.fromImage(image))
         self.scene().setSceneRect(self._pixmap.boundingRect())
@@ -127,6 +133,21 @@ class ImageView(QGraphicsView):
         self._auto_fit = True
         if not self._pixmap.pixmap().isNull():
             self.fitInView(self._pixmap, Qt.KeepAspectRatio)
+
+    def snapshot_rgb(self):
+        """Export original image dimensions, including projection and box layers."""
+        pixmap = self._pixmap.pixmap()
+        if pixmap.isNull():
+            raise ValueError("当前没有可导出的图像")
+        image = QImage(pixmap.size(), QImage.Format_RGB888)
+        image.fill(Qt.black)
+        painter = QPainter(image)
+        try:
+            self.scene().render(painter, QRectF(image.rect()), self._pixmap.boundingRect())
+        finally:
+            painter.end()
+        rows = np.frombuffer(image.constBits(), np.uint8).reshape(image.height(), image.bytesPerLine())
+        return rows[:, :image.width() * 3].reshape(image.height(), image.width(), 3).copy()
 
     def original_size(self):
         self._auto_fit = False
@@ -346,7 +367,7 @@ class DataView(QWidget):
         self.page_bar.setVisible(number > 1 or has_next or numeric_file)
 
     def show_frame(self, frame, title="", pixels=None, colors=None, point_size=2, opacity=.7,
-                   source_key=None):
+                   source_key=None, prepared_image=None):
         if source_key is not None and source_key != self._source_key:
             self._cloud_shown = False
             self._reload_camera_state = None
@@ -363,7 +384,7 @@ class DataView(QWidget):
         self.fusion_button.setVisible(frame.kind == "image")
         self.search.setVisible(frame.kind not in ("image", "pointcloud"))
         if frame.kind == "image":
-            self.image.set_image(frame.value, pixels, colors, point_size, opacity)
+            self.image.set_image(frame.value, pixels, colors, point_size, opacity, prepared_image=prepared_image)
             self.stack.setCurrentWidget(self.image)
         elif frame.kind == "pointcloud":
             if self.cloud_view is None:

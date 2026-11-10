@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QMenu,
     QPlainTextEdit,
     QPushButton,
     QSizePolicy,
@@ -72,16 +73,22 @@ class CalibrationPanel(QWidget):
         self.camera.setMinimumContentsLength(12)
         self.camera.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.camera.setToolTip("选择记录中的 CameraInfo；包内参数不包含雷达到相机的外参。")
-        self.calibration_button = QPushButton("导入内外参…")
-        self.calibration_button.setToolTip("导入 YAML / JSON；仅含外参的文件可与当前内参合并。")
-        self.save_button = QPushButton("保存…")
+        self.calibration_button = QPushButton("导入标定…")
+        self.calibration_button.setToolTip("导入 JSON、YAML、文本矩阵、TOML、NumPy 或 ZIP；可分别替换内参和外参。")
+        self.edit_button = QPushButton("编辑内参…")
+        self.edit_button.setToolTip("手动修改焦距、主点、分辨率和畸变系数，应用后刷新投影；保留当前外参。")
+        self.edit_extrinsics_button = QPushButton("编辑外参…")
+        self.edit_extrinsics_button.setToolTip("编辑雷达 → 相机的米制平移、角度或 4×4 矩阵；保留当前内参。")
+        self.more_button = QPushButton("更多…")
+        # Keep the public buttons as signal endpoints for existing browser wiring.
+        self.save_button = QPushButton("保存标定…", self)
         self.save_button.setToolTip("保存当前内参及已明确提供的外参。")
-        self.reset_button = QPushButton("清除")
+        self.reset_button = QPushButton("清除标定", self)
         self.reset_button.setToolTip("清除当前标定和包内相机参数选择。")
         source_row.addWidget(self.camera, 1)
         layout.addLayout(source_row)
         source_actions = QHBoxLayout()
-        for button in (self.calibration_button, self.save_button, self.reset_button):
+        for button in (self.calibration_button, self.edit_button, self.edit_extrinsics_button, self.more_button):
             source_actions.addWidget(button)
         source_actions.addStretch(1)
         layout.addLayout(source_actions)
@@ -106,9 +113,17 @@ class CalibrationPanel(QWidget):
         action_row.addWidget(self.box_overlay, 1, 0)
         action_row.addWidget(self.undistort, 1, 1)
         action_row.setColumnStretch(1, 1)
-        self.details_button = QPushButton("参数详情…")
+        self.details_button = QPushButton("参数详情…", self)
         self.details_button.setToolTip("以只读方式查看完整参数、外参方向和单位。")
-        source_actions.insertWidget(3, self.details_button)
+        menu = QMenu(self.more_button)
+        self._secondary_actions = []
+        for button in (self.details_button, self.save_button, self.reset_button):
+            action = menu.addAction(button.text())
+            action.setToolTip(button.toolTip())
+            action.triggered.connect(button.click)
+            self._secondary_actions.append((action, button))
+            button.hide()
+        self.more_button.setMenu(menu)
         layout.addLayout(action_row)
 
         self.projection_options = QWidget()
@@ -164,6 +179,7 @@ class CalibrationPanel(QWidget):
         self.parameters.setAccessibleName("只读标定参数 JSON")
         details_layout.addWidget(self.parameters, 1)
         close_buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        close_buttons.button(QDialogButtonBox.Close).setText("关闭")
         close_buttons.rejected.connect(self.details_dialog.reject)
         details_layout.addWidget(close_buttons)
 
@@ -210,7 +226,15 @@ class CalibrationPanel(QWidget):
         ready = calibration is not None
         self.save_button.setEnabled(ready)
         self.details_button.setEnabled(ready)
+        self.edit_extrinsics_button.setEnabled(ready)
+        self.edit_extrinsics_button.setToolTip(
+            "编辑雷达 → 相机的米制平移、角度或 4×4 矩阵；保留当前内参。" if ready
+            else "请先填写或导入相机内参，再编辑雷视外参。"
+        )
         self.reset_button.setEnabled(ready or bool(self._error) or self.camera.currentData() is not None)
+        for action, button in self._secondary_actions:
+            action.setEnabled(button.isEnabled())
+        self.more_button.setEnabled(any(action.isEnabled() for action, _ in self._secondary_actions))
         self._update_applicability()
 
     def _update_applicability(self, *_):
