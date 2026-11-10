@@ -197,6 +197,32 @@ TXT/LOG/CSV/TSV/JSON/YAML 可以直接查看；大文本和表格按页读取，
 - **LAS**：导出为 LAS 1.2，采用毫米精度，分类值限 0–31。LAZ/E57 仅支持读取。
 - **回收站**：系统回收站不可用时会保留未处理文件，不改为永久删除；真实移入与撤销恢复尚需手动验证。
 
+## 安装与运行
+
+从 [v2.1.0 Release](https://github.com/jarviscccwl/PointLabStudio/releases/tag/v2.1.0) 选择与系统和架构匹配的安装包。四个安装包及校验值见[统一发行记录](release-v2.1.0-platforms-2026-11-10.md)，均无需另外安装 Python。
+
+**Windows x64**：双击 EXE，首次启动等待运行库解压；关闭后自动清理本次运行目录。显卡需要支持 Vulkan 或 DirectX 12。
+
+**macOS ARM64**：仅适用于 Apple Silicon。打开 DMG，将 `PointLabStudio.app` 拖入「应用程序」。沿用原 macOS 发布构建，使用临时签名、未经过 Apple 公证；首次打开可能需要在系统「隐私与安全性」中允许。其构建基线及原始验证记录与 Windows / Ubuntu 不同，见发行记录。删除「应用程序」中的应用即可卸载，个人配置另行保留。
+
+### Ubuntu 安装与运行
+
+以 **Ubuntu 22.04 / glibc 2.35** 为最低基线，验证范围为 **22.04 和 24.04**，提供 amd64（x86_64）与 arm64（aarch64）两种包。不适用于 Ubuntu 20.04、32 位 x86 或 ARM32；其他发行版尚未验证。
+
+先用 `dpkg --print-architecture` 查看架构，再在下载目录执行匹配的一条命令：
+
+```bash
+# Intel / AMD 64 位
+sudo apt install ./PointLabStudio-v2.1.0-Ubuntu-amd64.deb
+
+# 64 位 ARM
+sudo apt install ./PointLabStudio-v2.1.0-Ubuntu-arm64.deb
+```
+
+APT 会补齐系统依赖，首次安装需要可用的软件源。安装后从应用菜单打开，或执行 `pointlabstudio`，也可传入路径，例如 `pointlabstudio "/home/user/采集数据"`。包内不包含设备专用显卡驱动，点云显示需要可用的 Vulkan 驱动；ARM64 通过架构仿真验证，未在物理 ARM 电脑上验证。
+
+升级时安装同架构的新包。卸载使用 `sudo apt remove pointlabstudio`；个人设置保留在 `~/.pointlabstudio/`，不会删除原始数据。可以用 `sha256sum --ignore-missing -c SHA256SUMS.txt` 校验当前目录中已下载的安装包。
+
 ## 从源码运行
 
 推荐 Python 3.12。在 PowerShell 中获取固定版本并安装依赖：
@@ -229,14 +255,16 @@ py -3.12 -m venv .venv
 powershell -ExecutionPolicy Bypass -File packaging/build.ps1
 ```
 
-**Ubuntu / macOS Apple Silicon**：在对应系统、架构的 Python 3.12 虚拟环境中执行：
+**Ubuntu / macOS Apple Silicon**：在对应系统、架构的 Python 3.12 虚拟环境中执行。Ubuntu DEB 应在 **22.04** 环境构建，以保留兼容性：
 
 ```bash
 python -m pip install -r requirements-build.txt
 python packaging/build-native.py
 ```
 
-Ubuntu 系统依赖见 [Dockerfile.linux](../packaging/Dockerfile.linux)。macOS 构建需要 Apple Silicon Mac，生成 `.dmg`，脚本未配置签名或公证。
+Ubuntu 默认生成 `.deb` 及 SHA-256 校验文件，安装到 `/opt/pointlabstudio` 并提供启动命令和桌面图标。构建会逐个检查 ELF 架构和 glibc 要求，高于 glibc 2.35 时拒绝输出。传入 `--format tar.gz` 可生成解压包。Linux 使用系统 `libstdc++6` / `libgcc-s1`，避免旧包内 C++ 运行库覆盖较新系统的显卡驱动依赖。
+
+Ubuntu 系统依赖见 [Dockerfile.linux](../packaging/Dockerfile.linux)。构建环境固定 Python 3.12.12；Linux 使用 Qt 6.7.3 以兼容 Ubuntu 22.04 ARM64，Windows/macOS 的依赖选择保持原版。macOS 需在 Apple Silicon Mac 上构建，生成 `.dmg`；脚本未配置开发者签名或公证。
 
 Windows 也可用 Docker Desktop 的 Linux 容器在本地构建 Ubuntu 包。以下命令生成 x86_64 包；将两处 `linux/amd64` 换为 `linux/arm64`、两处标签后缀 `amd64` 换为 `arm64` 即可构建 ARM64 包：
 
@@ -244,6 +272,8 @@ Windows 也可用 Docker Desktop 的 Linux 容器在本地构建 Ubuntu 包。�
 docker build --platform linux/amd64 -f packaging/Dockerfile.linux -t pointlab-build:v2.1.0-amd64 .
 docker run --rm --platform linux/amd64 --mount "type=bind,source=$($PWD.Path),target=/workspace" pointlab-build:v2.1.0-amd64
 ```
+
+也可在安装了 QEMU 架构模拟支持的 Linux 环境中使用 Podman 执行等价命令。`--work-dir` 与 `--dist-dir` 可分别指定过程目录和输出目录，`--payload` 可重新打包已有的 Linux onedir。构建镜像支持 `UBUNTU_MIRROR`、`PYTHON_MIRROR` 和 `WHEELHOUSE`；普通联网构建无需设置。`WHEELHOUSE` 应指向构建容器可访问的 wheel 文件下载页面，或已经准备在自定义基础镜像内的依赖目录；主机文件夹不会随此参数自动挂载。
 
 ## 设置与排错
 

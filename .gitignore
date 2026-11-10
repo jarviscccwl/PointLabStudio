@@ -12,6 +12,7 @@ pip-*/
 pytest-of-*/
 pygfx-*/
 *.pls
+*.assets/
 data/
 
 # 恢复文件（ACL 诊断）

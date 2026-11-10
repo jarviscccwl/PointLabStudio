@@ -1,20 +1,36 @@
-FROM ubuntu:24.04
+ARG BASE_IMAGE=ubuntu:22.04
+FROM ${BASE_IMAGE}
 
 ENV DEBIAN_FRONTEND=noninteractive
+ARG UBUNTU_MIRROR
+# Optional mirror changes only this disposable build image.
+RUN if [ -n "$UBUNTU_MIRROR" ]; then \
+      sed -i -E "s#https?://(archive.ubuntu.com/ubuntu|security.ubuntu.com/ubuntu|ports.ubuntu.com/ubuntu-ports)#${UBUNTU_MIRROR}#g" /etc/apt/sources.list; \
+    fi
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-venv python3-dev build-essential binutils patchelf \
     libgl1 libegl1 libxkbcommon0 libxcb-cursor0 libvulkan1 libgomp1 libxerces-c-dev \
-    ca-certificates && rm -rf /var/lib/apt/lists/*
-RUN python3 -m venv /opt/pointlab
-ENV PATH="/opt/pointlab/bin:$PATH"
-COPY requirements.txt requirements-build.txt /opt/requirements/
-RUN pip install --no-cache-dir -r /opt/requirements/requirements-build.txt
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libglib2.0-0t64 libdbus-1-3 libfontconfig1 libfreetype6 libxkbcommon-x11-0 \
+    libglib2.0-0 libdbus-1-3 libfontconfig1 libfreetype6 libxkbcommon-x11-0 \
     libxcb-icccm4 libxcb-keysyms1 libxcb-shape0 libxcb-xkb1 libusb-1.0-0 \
+    libgfortran5 libsm6 libice6 ca-certificates curl xz-utils \
     && rm -rf /var/lib/apt/lists/*
-RUN apt-get update && apt-get install -y --no-install-recommends libgfortran5 libsm6 libice6 \
-    && rm -rf /var/lib/apt/lists/*
+# Python 3.12 is bundled into the application; the target system needs no Python.
+ARG WHEELHOUSE
+RUN python3 -m venv /opt/bootstrap && \
+    if [ -n "$WHEELHOUSE" ]; then \
+      /opt/bootstrap/bin/pip install --no-index --find-links "$WHEELHOUSE" uv==0.9.16; \
+    else /opt/bootstrap/bin/pip install --no-cache-dir uv==0.9.16; fi
+ENV UV_PYTHON_INSTALL_DIR=/opt/python UV_LINK_MODE=copy
+ARG PYTHON_MIRROR
+RUN if [ -n "$PYTHON_MIRROR" ]; then \
+      /opt/bootstrap/bin/uv python install --mirror "$PYTHON_MIRROR" 3.12.12; \
+    else /opt/bootstrap/bin/uv python install 3.12.12; fi \
+    && /opt/bootstrap/bin/uv venv --python 3.12.12 /opt/pointlab
+ENV PATH="/opt/pointlab/bin:/opt/bootstrap/bin:$PATH"
+COPY requirements.txt requirements-build.txt /opt/requirements/
+RUN if [ -n "$WHEELHOUSE" ]; then \
+      uv pip install --python /opt/pointlab/bin/python --no-cache --no-index --find-links "$WHEELHOUSE" -r /opt/requirements/requirements-build.txt; \
+    else uv pip install --python /opt/pointlab/bin/python --no-cache -r /opt/requirements/requirements-build.txt; fi
 RUN python -c "from PySide6.QtWidgets import QApplication; import open3d, pye57"
 WORKDIR /workspace
 CMD ["python", "packaging/build-native.py"]

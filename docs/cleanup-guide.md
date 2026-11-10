@@ -1,6 +1,6 @@
 # 维护与清理指南
 
-最近整理：2026-11-10（v2.1.0 发布）。本文说明版本库里保留什么、哪些目录可以安全删除，以及如何重建环境、打包和发版。
+最近整理：2026-11-10（v2.1.0 跨平台发布）。源码以 main 为准，Windows、macOS 和 Ubuntu 两种架构的四个安装包集中在同一个 v2.1.0 Release。本文说明保留范围、可清理内容和维护方式。
 
 ## 版本库跟踪范围
 
@@ -13,28 +13,51 @@ docs/ requirements*.txt pyproject.toml run.py start.bat README.md .gitignore .do
 
 新增文件前先确认它属于源码还是过程产物；采集数据、验收截图、导出动画一律不进版本库。
 
-## 可以安全删除的内容
+## 过程文件与需要保留的内容
 
-下列目录与文件均被 `.gitignore` 忽略，删除后不影响源码，重新运行或重新构建时会自动生成：
+以下过程目录可以在对应程序或构建任务退出后清理。被 Git 忽略并不代表文件没有价值，不要批量删除所有忽略文件：
 
 | 路径 | 说明 |
 | --- | --- |
-| `.venv/` | 本地 Python 3.12 环境，按下方命令重建 |
 | `build/` | PyInstaller 中间产物（工作目录、payload、缓存） |
-| `dist/` | 发布成品；只保留当前版本的 EXE 与 `.sha256` |
 | `.tmp/` | 测试缓存与临时工作区，含 `pygfx/` 字体缓存 |
 | `__pycache__/`、`*.pyc` | 字节码缓存 |
 | `.pytest_cache/`、`pytest-of-*/` | pytest 运行产物与临时目录 |
-| `*.pls`、`*.assets/` | 工作区文件与动画资源，属于用户数据 |
 
-删除命令示例（在项目根目录执行）：
+需要保留：
 
-```powershell
-Remove-Item -Recurse -Force build, .tmp, .pytest_cache, pytest-of-* -ErrorAction SilentlyContinue
-Get-ChildItem -Recurse -Directory -Filter __pycache__ | Remove-Item -Recurse -Force
+- `dist/`：当前四个安装包及校验清单，是交付成品。
+- `.venv/`：源码运行依赖；只有确定要重建环境时才删除。
+- `.git/`、源码、资源、打包脚本、测试与文档。
+- 自己保存的 `*.pls` 和同名 `*.assets/`：工作区和处理结果，属于用户数据，不能作为缓存删除。
+- 原始采集包、点云、图像、内外参和导出结果。
+
+仅删除确认不再需要的旧安装包。GitHub 保留历史 Release、历史标签和 preview 分支；本次不合并 preview，只将独立 macOS v2.1.0 预发布整理进统一 Release。
+
+### 本机待手动清理
+
+此前自动审批拒绝了以下删除操作，仅返回 `blocked by policy`，未提供具体原因。本轮没有换方法重试；这些文件不参与当前成品运行，可以手动删除：
+
+```text
+C:\Users\lenovo\Desktop\pointlabstudio\build\ubuntu-release
+C:\Users\lenovo\Desktop\pointlabstudio\dist\PointLabStudio-v2.0.0-Windows-x64.exe
+C:\Users\lenovo\Desktop\pointlabstudio\dist\PointLabStudio-v2.0.0-Windows-x64.exe.sha256
+C:\Users\lenovo\Desktop\pointlabstudio\label-qa.gif
 ```
 
-`dist/` 里的历史版本（如 v2.0.0）可在确认不再需要时手动删除，只保留当前版本。
+`build/ubuntu-release` 是上一轮约 1.22 GiB 的依赖下载及过程目录，本轮复用其中已校验的依赖缓存；不影响 `dist` 中的程序。历史验收目录的清理边界保留在各轮交付说明中，不要删除其父级聊天目录或原始数据。
+
+本轮下载副本与分段缓存也已尝试清理，但自动审批在命令执行前拒绝，仅返回 `blocked by policy`。未重试或改用其他方式删除。该目录共 117 个文件、1,134,691,467 字节（约 1.06 GiB），成品已另存到 `dist` 并核对哈希，可以手动删除整个目录：
+
+```text
+C:\Users\lenovo\.codex\visualizations\2026\11\08\01a1b9ba-c0ef-74a2-aab5-1854d236c5cc\release-v2.1.0-main-sync\downloads
+```
+
+其父目录中的小型验证记录、原始 Release 元数据和同步前源码恢复副本可保留复查；它们不参与软件运行。
+
+### 本轮已完成的清理
+
+本轮 WSL 临时构建目录 `/var/tmp/pointlabstudio-2.1.0-main-sync` 已删除，释放约 2.66 GiB；10 个本轮构建及验证镜像和无用中间层已移除，测试容器及临时依赖下载服务已停止。先归档了测试记录和截图，再清理构建现场。保留 WSL、Podman、QEMU 等工具，便于以后重新构建。
 
 ## 重建开发环境
 
@@ -56,8 +79,10 @@ uv pip install --python .venv\Scripts\python.exe -r requirements-build.txt
 
 ```powershell
 $env:PYGFX_DATA_DIR = "$PWD\.tmp\pygfx"
+New-Item -ItemType Directory -Path $env:PYGFX_DATA_DIR -Force | Out-Null
+$env:PYTHONDONTWRITEBYTECODE = "1"
 foreach ($f in Get-ChildItem tests\test_*.py) {
-  .venv\Scripts\python.exe -m pytest $f -q -p no:cacheprovider
+  .venv\Scripts\python.exe -B -m pytest $f -q -p no:cacheprovider
 }
 ```
 
@@ -80,5 +105,8 @@ Get-FileHash dist\PointLabStudio-v2.1.0-Windows-x64.exe -Algorithm SHA256
 1. 修改 `core\__init__.py` 的 `__version__`，同步 `pyproject.toml`。
 2. 更新 `README.md` 的版本徽标、下载表格与 `docs/README.md` 的版本说明。
 3. 提交并推送 `main`，为同一提交打标签并推送：`git tag v<版本>`、`git push origin v<版本>`。
-4. 在 GitHub 新建同名 Release，上传 `dist` 中的 EXE 与 `.sha256`。
-5. 下载 Release 资产复核文件大小、SHA-256 与 `FileVersion`。
+4. 在 GitHub 同名 Release 上传 EXE、DMG 和两个 DEB，附统一 `SHA256SUMS.txt`；不要把二进制提交进 Git 历史。
+5. 逐个核对远端文件大小和 SHA-256。更新既有版本时先核对源标签，避免覆盖其他人刚提交的内容；相同哈希的已有成品无需重复上传。
+6. 先验证统一 Release 中的新下载，再清理重复预发布。历史版本及 preview 除非另有明确要求应保留。
+
+Ubuntu 的构建、安装和卸载见[使用手册](usage.md#ubuntu-安装与运行)。本次四个安装包的来源、验证和整理结果见[统一发行记录](release-v2.1.0-platforms-2026-11-10.md)。

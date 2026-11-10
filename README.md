@@ -11,7 +11,7 @@
 
 <p align="center">
   <a href="https://github.com/jarviscccwl/PointLabStudio/releases/tag/v2.1.0"><img src="https://img.shields.io/badge/release-v2.1.0-2563eb?style=flat-square" alt="release v2.1.0"></a>
-  <img src="https://img.shields.io/badge/desktop-Windows_x64-475569?style=flat-square" alt="Windows x64">
+  <img src="https://img.shields.io/badge/desktop-Windows_%7C_macOS_%7C_Ubuntu-475569?style=flat-square" alt="Windows / macOS / Ubuntu">
   <img src="https://img.shields.io/badge/python-3.12-475569?style=flat-square" alt="Python 3.12">
 </p>
 
@@ -27,7 +27,7 @@
 
 PointLab Studio 将点云、图像和采集包放在同一个窗口中：从选择数据流、同步查看，到修正内外参、编辑目标框，再保存融合动画或提取点云。也可直接打开普通点云，进行测量、滤波、裁剪、配准和网格重建。基于 **PySide6、pygfx / wgpu 和 Open3D**，提供深色与浅色主题。
 
-> **当前版本：v2.1.0。** 完整内外参编辑、融合与区间动画导出、自定义文件名、目标类别、逐帧显示和工作台体验更新已纳入本版，并修正了小屏幕下的窗口与参数区布局。源码与 [`v2.1.0` 标签](https://github.com/jarviscccwl/PointLabStudio/tree/v2.1.0)保持一致，Windows EXE 随 [GitHub Release](https://github.com/jarviscccwl/PointLabStudio/releases/tag/v2.1.0) 发布，也可用 `start.bat` 从源码运行。
+> **当前版本：v2.1.0。** [统一下载页面](https://github.com/jarviscccwl/PointLabStudio/releases/tag/v2.1.0)提供 **Windows x64、macOS ARM64、Ubuntu amd64 / arm64** 四个安装包。完整内外参编辑、融合与区间动画导出、目标标注和小屏幕布局更新见下文。源码以 [`main`](https://github.com/jarviscccwl/PointLabStudio/tree/main) 和 [`v2.1.0` 标签](https://github.com/jarviscccwl/PointLabStudio/tree/v2.1.0)为准；各平台构建来源与验证范围见[发行记录](docs/release-v2.1.0-platforms-2026-11-10.md)。
 
 ## 5 分钟上手
 
@@ -75,14 +75,20 @@ PointLab Studio 将点云、图像和采集包放在同一个窗口中：从选�
 
 ## 下载与运行
 
-| 版本 / 平台 | 获取方式 | 说明 |
+| 平台 | v2.1.0 安装包 | 适用范围 |
 | :--- | :--- | :--- |
-| **v2.1.0 · Windows 10 / 11 x64** | [下载 EXE](https://github.com/jarviscccwl/PointLabStudio/releases/download/v2.1.0/PointLabStudio-v2.1.0-Windows-x64.exe) | 单文件，无需安装 Python；校验信息见下 |
-| **v2.1.0 源码** | [`v2.1.0` 标签](https://github.com/jarviscccwl/PointLabStudio/tree/v2.1.0) · [源码 ZIP](https://github.com/jarviscccwl/PointLabStudio/archive/refs/tags/v2.1.0.zip) | 包含本页更新，按下文配置后运行 `start.bat` |
-| **历史 v2.0.0 · Windows x64** | [下载旧版 EXE](https://github.com/jarviscccwl/PointLabStudio/releases/download/v2.0.0/PointLabStudio-v2.0.0-Windows-x64.exe) · [固定源码](https://github.com/jarviscccwl/PointLabStudio/archive/refs/tags/v2.0.0.zip) | 不含 v2.1.0 更新 |
-| **Linux / macOS** | [自行构建](docs/usage.md#构建发布包) | 已有构建脚本，本次未提供这些平台的成品 |
+| **Windows x64** | [下载 EXE](https://github.com/jarviscccwl/PointLabStudio/releases/download/v2.1.0/PointLabStudio-v2.1.0-Windows-x64.exe) | Windows 10 / 11，Intel / AMD 64 位 |
+| **macOS ARM64** | [下载 DMG](https://github.com/jarviscccwl/PointLabStudio/releases/download/v2.1.0/PointLabStudio-v2.1.0-macOS-arm64.dmg) | Apple Silicon；沿用原 macOS 发布构建 |
+| **Ubuntu amd64** | [下载 DEB](https://github.com/jarviscccwl/PointLabStudio/releases/download/v2.1.0/PointLabStudio-v2.1.0-Ubuntu-amd64.deb) | Intel / AMD 64 位；Ubuntu 22.04 / 24.04 |
+| **Ubuntu arm64** | [下载 DEB](https://github.com/jarviscccwl/PointLabStudio/releases/download/v2.1.0/PointLabStudio-v2.1.0-Ubuntu-arm64.deb) | 64 位 ARM；Ubuntu 22.04 / 24.04 |
 
-Windows EXE 双击启动，首次启动需等待运行库解压。显卡需支持 Vulkan 或 DirectX 12。v2.1.0 的下载校验信息与验收记录见 [v2.1.0 交付说明](docs/release-v2.1.0-2026-11-10.md)。
+四个安装包均包含 Python 和主要运行依赖。下载后可用 [SHA256SUMS.txt](https://github.com/jarviscccwl/PointLabStudio/releases/download/v2.1.0/SHA256SUMS.txt) 校验文件。需要源码时下载 [v2.1.0 ZIP](https://github.com/jarviscccwl/PointLabStudio/archive/refs/tags/v2.1.0.zip)；旧版本保留在[历史发布](https://github.com/jarviscccwl/PointLabStudio/releases)中。
+
+**Windows**：双击 EXE，首次启动需等待运行库解压，显卡需支持 Vulkan 或 DirectX 12。**macOS**：打开 DMG，将应用拖入「应用程序」；此构建使用临时签名，未经过 Apple 公证，首次打开可能需要在系统「隐私与安全性」中允许。它沿用原 macOS 构建，不包含后续 main 的所有界面改动。
+
+**Ubuntu**：在下载目录运行 `sudo apt install ./PointLabStudio-v2.1.0-Ubuntu-amd64.deb`；ARM64 将文件名中的 `amd64` 换为 `arm64`。安装后从应用菜单或 `pointlabstudio` 命令启动。首次安装需要软件源补齐系统依赖，点云显示需要可用的 Vulkan 驱动。以 Ubuntu 22.04 为最低基线，不支持 20.04 或 32 位系统；ARM64 使用仿真环境验证，物理设备需结合显卡驱动检查。
+
+[平台安装与卸载说明 →](docs/usage.md#安装与运行) · [构建来源、校验和验证范围 →](docs/release-v2.1.0-platforms-2026-11-10.md)
 
 ## 从源码运行
 
@@ -134,7 +140,8 @@ cd PointLabStudio
 ## 文档、更新与反馈
 
 - [使用手册](docs/usage.md)：当前源码的完整流程、快捷键与排错入口。
-- [v2.1.0 交付说明](docs/release-v2.1.0-2026-11-10.md)：下载、校验、源码标签与发布验证。
+- [v2.1.0 跨平台交付说明](docs/release-v2.1.0-platforms-2026-11-10.md)：统一下载、构建来源、校验与验证范围。
+- [Windows v2.1.0 构建记录](docs/release-v2.1.0-2026-11-10.md)：原 Windows 成品与发布验证。
 - [整体使用与界面复核](docs/workspace-polish-2026-11-10.md)：小窗口布局、标定选择、导出画面与真实数据验收。
 - [文件命名、类别标签与逐帧显示](docs/export-labels-2026-11-10.md)：2026-11-10 源码更新及对应验证记录。
 - [标定、区间导出与连续浏览](docs/fusion-sequence-2026-11-10.md)：此前实现与性能测量；其中目录和清单导出方式已由后续命名导出更新，当前操作以使用手册为准。

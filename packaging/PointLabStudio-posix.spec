@@ -34,6 +34,11 @@ a = Analysis(
     excludes=["tkinter", "IPython", "jupyter", "notebook", "pytest", "_pytest", "pip",
               "ipykernel", "debugpy", "jupyter_client", "jupyter_core", "torch", "tensorflow", "mitsuba"],
 )
+if sys.platform == "linux":
+    # Use Ubuntu's C++ runtime so newer host Vulkan drivers can load. The DEB
+    # declares libstdc++6/libgcc-s1 dependencies; do not override their ABI.
+    a.binaries = [entry for entry in a.binaries if not Path(entry[0]).name.startswith(
+        ("libstdc++.so", "libgcc_s.so"))]
 pyz = PYZ(a.pure)
 exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="PointLabStudio",
           debug=False, strip=False, upx=False, console=False,
