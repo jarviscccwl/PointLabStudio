@@ -18,9 +18,9 @@ Source ancestry; installation files genuinely matching their stated architecture
 - [x] Download and hash-check the requested Windows EXE and macOS DMG into dist.
 - [x] Rebuild both Ubuntu DEBs from the synchronized source and verify installation, actual point rendering and uninstall on Ubuntu 22.04 and 24.04. Run affected and full regressions with separate Qt test processes.
 - [x] Update README, usage, release and cleanup records; verify local links and artifact manifests. Review the final source changes.
-- [ ] Commit and push the source directly to main without merging preview. Align the v2.1.0 source tag with the published source using a checked expected ref, preserving the original reference in the local release record.
-- [ ] Publish the four installers and checksums to v2.1.0, verify remote hashes, then remove only the duplicate v2.1.0-macos prerelease and tag. Preserve all historical versions and preview.
-- [ ] Clean newly generated process files where allowed and report exact remaining manual cleanup paths.
+- [x] Commit and push the source directly to main without merging preview (`9680482`). Include the final cleanup documentation in a follow-up commit; finalize its source tag and release metadata with the publication gate below.
+- [x] Publish the four installers and checksums to v2.1.0, verify remote hashes, then remove only the duplicate v2.1.0-macos prerelease and tag. Preserve all historical versions and preview.
+- [x] Clean newly generated process files where allowed and report exact remaining manual cleanup paths.
 
 ## Progress
 
@@ -34,3 +34,9 @@ Source ancestry; installation files genuinely matching their stated architecture
 - Regressions: Windows 733 passed, 235 subtests, 18 skipped; Linux amd64 745 passed, 237 subtests, 6 skipped; ARM64 focused 154 passed, 111 subtests. Both full suites have 48 successful modules. All four architecture/Ubuntu combinations passed installation, real 9,600-point rendering, rotation, normal close, uninstall and personal-data preservation. Screenshots were visually inspected.
 - The four installers and SHA256SUMS.txt are uploaded to release 440104293; each remote size and digest matches dist. The original Windows executable was preserved in place.
 - Cleaned the 2.66 GiB WSL build directory, all ten task build/QA images and their unused intermediate layers; stopped test containers and the temporary wheel server. Download-cache deletion was rejected with `blocked by policy`, so it was not retried; cleanup-guide.md lists this and previous manual cleanup paths.
+- Source commit `9680482` was pushed normally to main after checking the expected parent `9ce844b`. Verified 119 unchanged build inputs, all 153 Python files for syntax and 50 local documentation links. All saved test-module exit codes are zero. System proxy was used after direct Git connections reset.
+- Removed only redundant checksum asset 730683272, duplicate macOS release 440062475 and tag v2.1.0-macos. The replacement DMG asset 730881252 has the same size and digest as the original. Consolidated local current-version checksum files into SHA256SUMS.txt; previously blocked old-version files were not retried.
+
+## Final publication gate
+
+After committing this final record, push main normally, then align v2.1.0 with that commit using the checked original tag object `da5ce1d5d4c81b40b33aeed0125fafb41dd6a47e` as the lease. Update release 440104293 with the three-platform download table, build provenance, verification limits and final source link. Re-read the release, compare all five asset digests, and confirm main/tag alignment plus unchanged historical refs and preview. Keep the resulting exact commit, ref and asset readback in the external `release-v2.1.0-main-sync` validation directory so this source snapshot does not need to embed its own commit hash.

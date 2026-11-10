@@ -59,6 +59,8 @@ C:\Users\lenovo\.codex\visualizations\2026\11\08\01a1b9ba-c0ef-74a2-aab5-1854d23
 
 本轮 WSL 临时构建目录 `/var/tmp/pointlabstudio-2.1.0-main-sync` 已删除，释放约 2.66 GiB；10 个本轮构建及验证镜像和无用中间层已移除，测试容器及临时依赖下载服务已停止。先归档了测试记录和截图，再清理构建现场。保留 WSL、Podman、QEMU 等工具，便于以后重新构建。
 
+本地 v2.1.0 的四个单文件 `.sha256` 已合并为 `dist/SHA256SUMS.txt`，Release 同样只保留四个安装包和一个校验清单。重复的 `v2.1.0-macos` 预发布及同名标签已删除，DMG 的大小和 SHA-256 与原文件一致；历史版本和 preview 保留。
+
 ## 重建开发环境
 
 ```powershell
