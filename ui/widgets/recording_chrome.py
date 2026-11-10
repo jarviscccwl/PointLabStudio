@@ -6,7 +6,7 @@ navigation/decoding controller independent of toolbar and settings arrangement.
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFrame, QGridLayout, QHBoxLayout, QLabel,
-    QMenu, QSlider, QSpinBox, QSplitter, QTabWidget, QToolButton, QVBoxLayout,
+    QMenu, QSpinBox, QSplitter, QTabWidget, QToolButton, QVBoxLayout,
     QWidget, QSizePolicy,
 )
 

@@ -1,8 +1,8 @@
 # 使用手册
 
-[返回项目首页](../README.md) · [v2.1.0 交付说明](release-v2.1.0-2026-11-10.md) · [preview 源码](https://github.com/jarviscccwl/PointLabStudio/tree/preview)
+[返回项目首页](../README.md) · [v2.1.0 交付说明](release-v2.1.0-2026-11-10.md) · [v2.1.0 源码](https://github.com/jarviscccwl/PointLabStudio/tree/v2.1.0)
 
-本文对应 v2.1.0，覆盖采集包浏览、传感器融合、三维框选、点云处理与源码构建。标定编辑、区间导出、目标类别、逐帧高亮修复及界面整理均已纳入本地 `dist/PointLabStudio-v2.1.0-Windows-x64.exe`。也可从项目根目录运行 `start.bat`；GitHub `preview` 只提供源码，不上传此次 EXE。
+本文对应 v2.1.0，覆盖采集包浏览、传感器融合、三维框选、点云处理与源码构建。标定编辑、区间导出、目标类别、逐帧高亮修复及界面整理均已纳入 `v2.1.0` 版本的 Windows EXE（见 [GitHub Release](https://github.com/jarviscccwl/PointLabStudio/releases/tag/v2.1.0)）。也可从项目根目录运行 `start.bat`。
 
 ## 开始使用
 
@@ -202,7 +202,7 @@ TXT/LOG/CSV/TSV/JSON/YAML 可以直接查看；大文本和表格按页读取，
 推荐 Python 3.12。在 PowerShell 中获取固定版本并安装依赖：
 
 ```powershell
-git clone --branch preview https://github.com/jarviscccwl/PointLabStudio.git
+git clone --branch v2.1.0 https://github.com/jarviscccwl/PointLabStudio.git
 cd PointLabStudio
 py -3.12 -m venv .venv
 .venv\Scripts\python.exe -m pip install -r requirements.txt

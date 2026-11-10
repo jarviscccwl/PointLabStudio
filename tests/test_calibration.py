@@ -6,7 +6,6 @@ import unittest
 import numpy as np
 
 from core.calibration import (
-    CameraCalibration,
     calibration_from_dict,
     calibration_to_dict,
     from_camera_info,

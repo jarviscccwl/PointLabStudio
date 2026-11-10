@@ -3,7 +3,6 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import threading
-import time
 import unittest
 from types import SimpleNamespace
 import numpy as np

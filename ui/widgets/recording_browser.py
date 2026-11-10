@@ -28,7 +28,7 @@ from core.model.entities import COLOR_MODES, ScalarField
 from core.object_tracking import Box3D
 from core.recording_sync import TimestampMatcher
 from ui.recording_tasks import RecordingTask
-from ui.widgets.data_view import DataView, render_projection_image
+from ui.widgets.data_view import render_projection_image
 from ui.widgets.recording_prefetch import PreparedFramesMixin
 from ui.widgets.recording_export import RecordingExportController
 from ui.widgets.calibration_editor import CalibrationImportDialog, IntrinsicsDialog, ExtrinsicsDialog

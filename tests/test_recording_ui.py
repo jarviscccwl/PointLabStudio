@@ -14,7 +14,7 @@ import numpy as np
 from PIL import Image
 
 from PySide6.QtCore import QCoreApplication, QEvent, Qt
-from PySide6.QtWidgets import QApplication, QDialog, QWidget
+from PySide6.QtWidgets import QApplication, QDialog
 from PySide6.QtTest import QTest
 
 from core.io.recording_types import (

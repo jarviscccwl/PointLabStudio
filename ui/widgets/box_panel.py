@@ -417,19 +417,26 @@ class ObjectTrackingDialog(QDialog):
             self.scroll.hide()
             core = self.layout().minimumSize().height() - self.editor.minimumHeight()
             preview_minimum = self._minimum_preview_height()
+            preview_preferred = max(self._preview_minimum, preview_minimum + 122)
             browser = self._controller.browser
             if hasattr(browser, "fit_compact_controls"):
-                if self.status.isHidden():
-                    core += self.status.minimumSizeHint().height() + self.layout().spacing()
+                status_height = self.status.minimumSizeHint().height() + self.layout().spacing()
+                if not self.status.isHidden():
+                    core -= status_height
                 tight = browser.fit_compact_controls(core + 108 + preview_minimum + splitter.handleWidth())
-                self.status.setVisible(not tight)
+                total = max(0, splitter.height() - splitter.handleWidth())
+                # Hide the secondary status before shrinking the usable preview.
+                self.status.setVisible(not tight and total >= core + status_height + 108 + preview_preferred)
                 self.layout().activate()
                 core = self.layout().minimumSize().height() - self.editor.minimumHeight()
                 total = max(0, splitter.height() - splitter.handleWidth())
             # The 48-pixel floor is for genuinely short windows. Opening the
             # editor normally reserves a useful 170-pixel cloud/image canvas.
-            preview_preferred = max(self._preview_minimum, preview_minimum + 122)
-            inline = expanded and total >= core + 108 + self.scroll.minimumHeight() + 5 + preview_minimum
+            # Hiding the status row frees preview space, not settings space:
+            # keep its height in the inline budget so toggling the status
+            # cannot flip the settings row between inline and tool window.
+            inline_core = core + (status_height if self.status.isHidden() else 0)
+            inline = expanded and total >= inline_core + 108 + self.scroll.minimumHeight() + 5 + preview_minimum
             self._place_settings(expanded and not inline)
             self.scroll.setVisible(expanded)
             if not expanded:

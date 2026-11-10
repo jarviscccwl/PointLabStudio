@@ -47,7 +47,6 @@ from core.commands.spec import get_spec
 from core.commands.builtin import run_command
 from core.geometry import mesh as mesh_ops
 from core.io.auto_ingest import plan_ingest, tier_by_points
-from core.io.lidar_import import import_frames, inspect_source, is_lidar_package
 from core.io.measurements import write_measurements_csv
 from core.io.readers import ReadOptions, read_cloud, read_stream_bin
 from core.io.scanner import natural_key
@@ -65,7 +64,6 @@ from ui.widgets.transform_dialog import TransformDialog
 from ui.widgets.pipeline_dialog import PipelineDialog
 from ui.widgets.script_dialog import ScriptDialog
 from ui.widgets.frame_browser import FrameBrowser
-from ui.widgets.lidar_import_dialog import LidarImportDialog
 from ui.widgets.recording_browser import RecordingBrowser
 from ui.widgets.smooth_progress import SmoothProgressDialog
 
@@ -158,31 +156,6 @@ class ScanThread(QThread):
                             "data_sources": inventory.sources})
 
 
-class LidarImportThread(QThread):
-    """后台把 pcap / mcap 解析成 .npy 帧目录。"""
-
-    progress = Signal(float)
-    done = Signal(object)
-    failed = Signal(str)
-
-    def __init__(self, options: dict, parent=None):
-        super().__init__(parent)
-        self.options = dict(options)
-        self.open_after = bool(self.options.pop("open_after", True))
-
-    def run(self):
-        try:
-            result = import_frames(
-                **self.options,
-                progress=lambda f: self.progress.emit(float(f)),
-                cancel=self.isInterruptionRequested,
-            )
-        except Exception as exc:  # noqa: BLE001 — 线程边界统一转成提示
-            if not self.isInterruptionRequested():
-                self.failed.emit(str(exc))
-            return
-        if not self.isInterruptionRequested():
-            self.done.emit(result)
 
 
 class SourceOperationThread(QThread):
@@ -312,7 +285,6 @@ class MainWindow(RecordingSessionMixin, ProjectSessionMixin, QMainWindow):
         self._pending_display: dict = {}
         self.history = History()
         self._filter_thread: FilterThread | None = None
-        self._import_thread: LidarImportThread | None = None
         self._closing = False
         self._sync_guard = False
         self._selection: list = []  # [(entity, indices), ...] 框选/套索结果
@@ -3133,9 +3105,6 @@ class MainWindow(RecordingSessionMixin, ProjectSessionMixin, QMainWindow):
         """弹出导入对话框；preset 为已选好的包路径（拖放/最近文件）。"""
         if self._closing:
             return
-        if self._import_thread is not None:
-            self._flash_status("正在导入雷达包，请等待当前任务结束。")
-            return
         if self._source_operation is not None:
             self._flash_status("文件操作进行中，请稍后再导入雷达包。")
             return
@@ -3150,51 +3119,10 @@ class MainWindow(RecordingSessionMixin, ProjectSessionMixin, QMainWindow):
         self.settings.last_dir = os.path.dirname(path)
         self._open_recording_sources([path])
 
-    def _launch_lidar_import(self, options: dict):
-        thread = LidarImportThread(options, self)
-        self._import_thread = thread
-        self.status_task.setText("正在解析雷达包…")
-        thread.progress.connect(lambda f: self.status_task.setText(f"导入雷达包 {f:.0%}"))
-        thread.done.connect(lambda result, t=thread: self._on_lidar_imported(result, t))
-        thread.failed.connect(self._on_lidar_failed)
-        thread.finished.connect(self._finish_lidar_import)
-        thread.start()
-        self.log(f"正在导入雷达包：{os.path.basename(options['path'])}")
-
-    def _on_lidar_imported(self, result, thread):
-        if self._closing:
-            return
-        self.log(f"雷达包导入完成：{result.frames} 帧 / {result.points:,} 点 → {result.output_dir}")
-        for warning in result.warnings:
-            self.log(f"雷达包提示：{warning}")
-        self.status_task.setText(f"导入完成：{result.frames} 帧 / {result.points:,} 点")
-        if thread.open_after:
-            self.open_paths([result.output_dir])
-
-    def _on_lidar_failed(self, message: str):
-        if self._closing:
-            return
-        self.log(f"雷达包导入失败：{message}")
-        self.status_task.setText("雷达包导入失败")
-        QMessageBox.warning(self, "导入失败", message)
-
-    def _finish_lidar_import(self):
-        thread, self._import_thread = self._import_thread, None
-        if thread is not None:
-            thread.deleteLater()
-
-    @staticmethod
-    def _unique_output_dir(base: str) -> str:
-        candidate, index = base, 2
-        while os.path.isdir(candidate) and os.listdir(candidate):
-            candidate = f"{base}-{index}"
-            index += 1
-        return candidate
-
     def _project_operation_blocked(self):
         blocked = bool(self._source_operation is not None or self._threads or self._scan_threads
                        or self._filter_thread is not None or self._eps_thread is not None
-                       or self._import_thread is not None or self._recording_importing
+                       or self._recording_importing
                        or any(thread.isRunning() for thread in self._recording_threads()))
         if blocked:
             self._flash_status("正在加载、处理或操作原文件，请完成后再操作工作区。", 6000)
@@ -3667,8 +3595,6 @@ class MainWindow(RecordingSessionMixin, ProjectSessionMixin, QMainWindow):
             threads.append(self._eps_thread)
         if self._source_operation is not None:
             threads.append(self._source_operation)
-        if self._import_thread is not None:
-            threads.append(self._import_thread)
         for thread in threads:
             thread.requestInterruption()
         if any(thread.isRunning() for thread in threads):

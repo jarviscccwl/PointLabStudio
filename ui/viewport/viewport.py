@@ -805,8 +805,8 @@ class PointCloudViewport(RenderCanvas):
                 clipping_planes=self._clip_planes(),
             )
             return gfx.Points(geo, mat)
-        except Exception as exc:  # noqa: BLE001
-            print(f"[viewport] 创建渲染对象失败: {entity.name} — {exc}")
+        except Exception:  # noqa: BLE001
+            logging.getLogger(__name__).exception("Failed to build render object for %s", entity.name)
             return None
 
     def set_point_size(self):
@@ -944,7 +944,6 @@ class PointCloudViewport(RenderCanvas):
         front = np.array([0.0, -1.0, 0.45], dtype=np.float64)
         front /= np.linalg.norm(front)
         dist = extent * 1.15
-        pos = center + front * dist
 
         self._pivot = np.asarray(center, dtype=np.float64)
         self._distance = float(dist)
@@ -1103,8 +1102,6 @@ class PointCloudViewport(RenderCanvas):
 
         front = np.array([0.0, -1.0, 0.45], dtype=np.float64)
         front /= np.linalg.norm(front)
-        pos = center + front * extent * 1.15
-
         self._pivot = np.asarray(center, dtype=np.float64)
         self._distance = float(extent * 1.15)
         self._yaw = np.deg2rad(-90.0)

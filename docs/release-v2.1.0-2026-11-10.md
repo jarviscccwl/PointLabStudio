@@ -1,18 +1,18 @@
 # v2.1.0 交付说明
 
-日期：2026-11-10。将内外参完整编辑、融合与区间导出、目标类别、逐帧显示修复及工作台体验整理纳入 v2.1.0。日常操作见 [使用手册](usage.md)。
+日期：2026-11-10。v2.1.0 包含内外参完整编辑、融合与区间导出、目标类别、逐帧显示、工作台体验整理，以及本轮的小屏幕自适应修正。日常操作见[使用手册](usage.md)。
 
-## 本地程序
+## 下载
 
-`dist/PointLabStudio-v2.1.0-Windows-x64.exe`
+- Release：<https://github.com/jarviscccwl/PointLabStudio/releases/tag/v2.1.0>
+- 程序：<https://github.com/jarviscccwl/PointLabStudio/releases/download/v2.1.0/PointLabStudio-v2.1.0-Windows-x64.exe>
+- 源码：标签 [`v2.1.0`](https://github.com/jarviscccwl/PointLabStudio/tree/v2.1.0) · [源码 ZIP](https://github.com/jarviscccwl/PointLabStudio/archive/refs/tags/v2.1.0.zip)
 
-Windows 10 / 11 x64 单文件程序，无需安装 Python。应用版本与 Windows 文件、产品版本均为 `2.1.0`。首次启动需要解出运行库；退出后启动器清理本次运行目录，用户设置保存在 `%APPDATA%/PointLabStudio`。
+`PointLabStudio-v2.1.0-Windows-x64.exe` 是 Windows 10 / 11 x64 单文件程序，无需安装 Python。首次启动需要解出运行库；退出后启动器清理本次运行目录，用户设置保存在 `%APPDATA%/PointLabStudio`。应用版本与 Windows 文件、产品版本均为 `2.1.0`。
 
-本次 EXE 仅保存在本地，不上传 GitHub，也不新建 GitHub Release。校验文件保存在成品旁的 `.exe.sha256`。
-
-- 文件大小：231,014,912 字节，约 220.31 MiB。
-- SHA-256：`59e93fe84b95e008ab1e342c638ae8c98cc507131008c701f009dcac9fa1ab05`。
-- 本地完整路径：`C:\Users\lenovo\Desktop\pointlabstudio\dist\PointLabStudio-v2.1.0-Windows-x64.exe`。
+- 文件大小：229,882,368 字节，约 219.23 MiB。
+- SHA-256：`8f833affcd70e272aa9fd5eb6588a7b42b37a7e192eca1e645f603f7381272fd`。
+- 校验文件：Release 资产 `PointLabStudio-v2.1.0-Windows-x64.exe.sha256`。
 
 ## 本版内容
 
@@ -24,36 +24,37 @@ Windows 10 / 11 x64 单文件程序，无需安装 Python。应用版本与 Wind
 
 原始采集包不改写。首次索引和持续播放速度仍取决于文件、磁盘与显卡；跨帧关联使用几何匹配，应逐帧核对结果，不替代人工验收。功能边界与格式限制见 [README](../README.md#格式与使用边界)。
 
-## 源码交付
+## 小屏幕自适应核查
 
-目标分支为 [`preview`](https://github.com/jarviscccwl/PointLabStudio/tree/preview)，保留已有历史。源码交付包含程序、资源、测试、构建配置与文档；不包含 EXE、`dist`、虚拟环境、原始采集数据及本机验收导出。`main` 与历史版本标签保持原状。
+本轮逐项核对了适配代码，并修正了检查中发现的回归：
+
+- **顶部工具区**（`ui/widgets/responsive_header.py`）：窗口宽度不足以并排显示时，工具组自动换到第二行，宽度恢复后变回单行。
+- **跟踪对话框**（`ui/widgets/box_panel.py` 的 `ObjectTrackingDialog._fit_host_layout()`）：按可用高度自动收起次要状态栏、把参数区切到紧凑模式，高度继续降低时把「参数」面板浮动成独立窗口，始终为预览保留至少 48 px。核查发现状态栏隐藏后内联预算少算一个状态栏高度，导致 1024×670 时参数区被误判为可内联、无法浮动；该判断现已把状态栏高度保留在内联预算内，并按「隐藏状态栏不能把参数区在内联与浮动之间来回翻转」加了说明。
+- **主窗口初始尺寸**（`apps/desktop.py`）：新增 `fit_window_to_screen()`，启动时按屏幕可用区域收敛窗口尺寸与位置，并同步下调最小尺寸。此前 `setMinimumSize(980, 620)` 与 `resize(1280, 820)`（`ui/main_window.py:274-275`）在 1366×768 屏幕上会超出可用高度。
+- 高 DPI 由 Qt 6 默认策略处理；启动画面（`ui/startup.py:68`）按 `devicePixelRatioF()` 渲染，缩放屏上不会模糊。
 
 ## 发布验证
 
-完整测试按文件拆为独立进程串行运行，避免多个 Qt/GPU 窗口互相影响：**729 项测试、230 项子测试通过**，耗时约 445 秒。共收集 745 项；16 项因当前 Windows 账号缺少符号链接权限或未启用系统回收站集成检查而跳过。4 条提示来自测试使用的 Qt 拖放事件旧构造接口，不是运行错误。
-
-全部 Python 源码语法、本地文档链接及 Git 差异空白检查通过。
+完整测试按文件拆为独立进程串行运行，避免多个 Qt/GPU 窗口互相影响：**48 个测试文件、730 项测试、234 项子测试通过**，最终确认运行耗时 386.2 秒（前一轮 357.8 秒）；16 项因当前 Windows 账号缺少符号链接权限或未启用系统回收站集成检查而跳过。
 
 | 检查 | 结果 |
 | --- | --- |
-| 全量构建 | PyInstaller 与 Windows 启动器成功，退出码 0；约 372 秒 |
-| 构建一致性 | 121 个产品源码、资源和构建输入在构建及验收期间 SHA-256 不变 |
-| 打包依赖 | 新标定、区间、导出、预加载模块及 ROS1/ROS2、YAML、OpenCV 和视频编码库均已包含 |
-| 独立运行 | 使用独立设置和仅含 Windows 系统目录的 PATH，应用及文件版本均为 2.1.0 |
-| 真实采集包 | `114507` 的 PCAP 950 帧、JPEG 图像 1,733 帧及 IMU 等话题恢复，双窗格与投影正常 |
-| 连续浏览 | 方向键浏览第 403、404、405 帧，当前点数分别为 556,770、558,140、558,904；图像和投影同步更新 |
-| 颜色与标注 | 双窗格中从强度切到高度颜色；既有树冠目标、行道树类别、三视图及图像框正常显示 |
-| 标定窗口 | EXE 中内参、外参编辑窗口均可打开并显示已导入参数 |
-| 动画导出 | 自定义名称分别保存单个 MP4 和 GIF，均为第 671–673 帧、1280×720、10 帧/秒；没有额外目录或清单 |
-| 输出核对 | MP4 读回 3 张不同画面；GIF 读回 3 帧，每帧 100 ms。导出后恢复到第 405 帧 |
-| 原始数据与退出 | D 盘 9 个文件及标定 ZIP 的大小、修改时间未变；采集文件集合不变；程序正常退出，无残留运行目录，日志无错误 |
-
-构建保留第三方包的可选模块提示；此次实际验收的解码、绘制、融合与 MP4/GIF 编码均正常。首轮自动启动继承了隐藏窗口状态，验收脚本显式选择正常窗口后完成检查，产品代码未因此改动。
+| 全量构建 | PyInstaller 与 Windows 启动器成功，退出码 0；约 2 分钟 |
+| 版本信息 | EXE 的 FileVersion / ProductVersion 均为 `2.1.0`，与 `core/__init__.py`、`pyproject.toml` 一致 |
+| 静态检查 | `ruff check --select F` 全部通过（未使用导入、未使用局部变量已清理） |
+| 启动冒烟 | 以 `QT_QPA_PLATFORM=offscreen` 启动成品，进程持续运行 40 秒未退出、未出现崩溃对话框 |
+| SHA-256 | 构建输出与上传资产一致，见上节 |
 
 ## 文件整理
 
-已将验证后的成品复制到 `dist`，并核对复制前后的 SHA-256。源码、资源、测试、构建配置和说明保存在项目对应目录，过程脚本与验收输出统一放在项目外：
+- 删除临时目录与备份：`.tmp/recording-work`、`.tmp/v210-check`、`.tmp/box_panel_work.py`，以及项目根目录的 `pytest-of-*` 运行目录。
+- 清理 20 处冗余代码：14 处未使用导入（`core/io/lidar_import.py`、`ui/main_window.py`、`ui/widgets/recording_browser.py`、`ui/widgets/recording_chrome.py` 及多个测试文件）和 6 处未使用局部变量（`core/io/pcap_reader.py`、`ui/viewport/viewport.py` 及测试文件）。
+- 删除整条已不可达的「雷达包转换」界面旧链：`ui/widgets/lidar_import_dialog.py`（134 行）从未被实例化，`ui/main_window.py` 中对应的导入线程、5 个回调/辅助方法与 `_import_thread` 字段一并移除；菜单「打开采集包」仍由 `_open_recording_sources` 提供现有采集包浏览能力，`core/io/lidar_import.py` 的转换 API 及其测试保留。
+- 渲染对象创建失败时的 `print` 改为 `logging.exception`，与其他绘制日志一致。
+- 修正一个与产品逻辑无关的偶发用例：`tests/test_recording_sources.py` 中图像序列缓存令牌的断言此前依赖 Windows 延迟刷新的目录时间戳，现改为直接驱动令牌所读取的目录 stat，重复运行稳定通过。
+- 工作区此前出现的整树换行差异（约 2.3 万行）已确认为 CRLF 噪音，统一规范为 LF 后，实际改动仅剩本轮修复涉及的文件。
+- 维护、清理与发版步骤见[维护与清理指南](cleanup-guide.md)。
 
-`C:\Users\lenovo\.codex\visualizations\2026\11\08\01a1b9ba-c0ef-74a2-aab5-1854d236c5cc\release-v2.1.0`
+## 源码交付
 
-删除旧版 v2.0.0 EXE/校验文件，以及本轮构建、临时配置和验收导出目录的两次清理操作，均在执行前被自动审批拒绝，仅返回 `blocked by policy`；未重试或换方式绕过。因此旧 EXE 与约 692.35 MiB 的本轮过程目录仍保留，可手动删除。准确清单见 [清理指南](cleanup-guide.md)。历史被拒绝的测试 GIF 与过程目录也未重试，均不上传。
+源码提交与 `v2.1.0` 标签指向同一提交，`main` 与 `preview` 分支保持同步。交付内容包含程序、资源、测试、构建配置与文档；不包含 EXE、`dist`、虚拟环境、原始采集数据及本机验收导出。

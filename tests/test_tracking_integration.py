@@ -308,6 +308,23 @@ class TrackingIntegrationTests(unittest.TestCase):
         self.assertTrue(browser.range_row.isVisible())
         self.assertEqual(browser.slider.selection(), (1, 2))
 
+    def test_preview_layout_restores_secondary_status_when_height_returns(self):
+        browser, tracking = self._check_default_preview_with_export_range(True)
+        self.window.resize(1280, 1000)
+        QTest.qWait(60)
+        self.assertTrue(tracking.dialog.status.isVisible())
+        self.assertTrue(browser.range_row.isVisible())
+        self.window.resize(1280, 820)
+        QTest.qWait(60)
+        self.assertGreaterEqual(browser.left.cloud_view.height(), 170)
+        self.assertGreaterEqual(browser.right.image.viewport().height(), 170)
+        sizes = browser.box_splitter.sizes()
+        for _ in range(3):
+            tracking.dialog.schedule_layout()
+            QTest.qWait(30)
+        self.assertEqual(browser.box_splitter.sizes(), sizes)
+        self.assertEqual(browser.slider.selection(), (1, 2))
+
     def _check_default_preview_with_export_range(self, range_first, size=(1280, 820), minimum=170):
         path = self.base / "preview-layout.mcap"
         write_sensor_mcap(path, clouds=self.clouds,

@@ -133,8 +133,8 @@ class RecordingNavigationTests(unittest.TestCase):
         self.assertFalse(self.browser.comparison_row.isHidden())
 
     def test_time_jump_uses_selected_clock_and_unsorted_original_indices(self):
-        source = self.load({"imu": [FrameData("imu", {"index": i}, None, time)
-                                   for i, time in enumerate((2_000_000_000, 1_000_000_000, 1_500_000_000))]})
+        self.load({"imu": [FrameData("imu", {"index": i}, None, time)
+                           for i, time in enumerate((2_000_000_000, 1_000_000_000, 1_500_000_000))]})
         self.assertTrue(self.browser.jump_to_time(.49))
         self.idle()
         self.assertEqual(self.browser.position.value(), 3)

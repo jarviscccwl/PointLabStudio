@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/jarviscccwl/PointLabStudio/tree/preview"><img src="https://img.shields.io/badge/preview-v2.1.0-2563eb?style=flat-square" alt="preview v2.1.0"></a>
+  <a href="https://github.com/jarviscccwl/PointLabStudio/releases/tag/v2.1.0"><img src="https://img.shields.io/badge/release-v2.1.0-2563eb?style=flat-square" alt="release v2.1.0"></a>
   <img src="https://img.shields.io/badge/desktop-Windows_x64-475569?style=flat-square" alt="Windows x64">
   <img src="https://img.shields.io/badge/python-3.12-475569?style=flat-square" alt="Python 3.12">
 </p>
@@ -27,7 +27,7 @@
 
 PointLab Studio 将点云、图像和采集包放在同一个窗口中：从选择数据流、同步查看，到修正内外参、编辑目标框，再保存融合动画或提取点云。也可直接打开普通点云，进行测量、滤波、裁剪、配准和网格重建。基于 **PySide6、pygfx / wgpu 和 Open3D**，提供深色与浅色主题。
 
-> **当前版本：v2.1.0。** 完整内外参编辑、融合与区间动画导出、自定义文件名、目标类别、逐帧显示和工作台体验更新已纳入本版。源码位于 [`preview`](https://github.com/jarviscccwl/PointLabStudio/tree/preview) 分支；Windows EXE 仅交付到本地 `dist/PointLabStudio-v2.1.0-Windows-x64.exe`，不上传 GitHub。也可用 `start.bat` 从源码运行。公开的 v2.0.0 Release 是历史版本。
+> **当前版本：v2.1.0。** 完整内外参编辑、融合与区间动画导出、自定义文件名、目标类别、逐帧显示和工作台体验更新已纳入本版，并修正了小屏幕下的窗口与参数区布局。源码与 [`v2.1.0` 标签](https://github.com/jarviscccwl/PointLabStudio/tree/v2.1.0)保持一致，Windows EXE 随 [GitHub Release](https://github.com/jarviscccwl/PointLabStudio/releases/tag/v2.1.0) 发布，也可用 `start.bat` 从源码运行。
 
 ## 5 分钟上手
 
@@ -77,12 +77,12 @@ PointLab Studio 将点云、图像和采集包放在同一个窗口中：从选�
 
 | 版本 / 平台 | 获取方式 | 说明 |
 | :--- | :--- | :--- |
-| **v2.1.0 · Windows 10 / 11 x64** | 本地 `dist/PointLabStudio-v2.1.0-Windows-x64.exe` | 单文件，无需安装 Python；本次不提供 GitHub EXE 下载 |
-| **v2.1.0 源码** | [`preview` 分支](https://github.com/jarviscccwl/PointLabStudio/tree/preview) · [源码 ZIP](https://github.com/jarviscccwl/PointLabStudio/archive/refs/heads/preview.zip) | 包含本页更新，按下文配置后运行 `start.bat` |
+| **v2.1.0 · Windows 10 / 11 x64** | [下载 EXE](https://github.com/jarviscccwl/PointLabStudio/releases/download/v2.1.0/PointLabStudio-v2.1.0-Windows-x64.exe) | 单文件，无需安装 Python；校验信息见下 |
+| **v2.1.0 源码** | [`v2.1.0` 标签](https://github.com/jarviscccwl/PointLabStudio/tree/v2.1.0) · [源码 ZIP](https://github.com/jarviscccwl/PointLabStudio/archive/refs/tags/v2.1.0.zip) | 包含本页更新，按下文配置后运行 `start.bat` |
 | **历史 v2.0.0 · Windows x64** | [下载旧版 EXE](https://github.com/jarviscccwl/PointLabStudio/releases/download/v2.0.0/PointLabStudio-v2.0.0-Windows-x64.exe) · [固定源码](https://github.com/jarviscccwl/PointLabStudio/archive/refs/tags/v2.0.0.zip) | 不含 v2.1.0 更新 |
 | **Linux / macOS** | [自行构建](docs/usage.md#构建发布包) | 已有构建脚本，本次未提供这些平台的成品 |
 
-Windows EXE 双击启动，首次启动需等待运行库解压。显卡需支持 Vulkan 或 DirectX 12。本地 v2.1.0 的校验信息与验收记录见 [v2.1.0 交付说明](docs/release-v2.1.0-2026-11-10.md)。
+Windows EXE 双击启动，首次启动需等待运行库解压。显卡需支持 Vulkan 或 DirectX 12。v2.1.0 的下载校验信息与验收记录见 [v2.1.0 交付说明](docs/release-v2.1.0-2026-11-10.md)。
 
 ## 从源码运行
 
@@ -94,10 +94,10 @@ py -3.12 -m venv .venv
 .\start.bat
 ```
 
-如需另外获取 **v2.1.0** 源码，可下载 `preview` 源码 ZIP，或在新目录执行以下命令，再按上述步骤配置。`main` 和历史版本标签与 `preview` 分开维护。
+如需另外获取 **v2.1.0** 源码，可下载 `v2.1.0` 源码 ZIP，或在新目录执行以下命令，再按上述步骤配置。
 
 ```powershell
-git clone --branch preview https://github.com/jarviscccwl/PointLabStudio.git
+git clone --branch v2.1.0 https://github.com/jarviscccwl/PointLabStudio.git
 cd PointLabStudio
 ```
 
@@ -134,7 +134,7 @@ cd PointLabStudio
 ## 文档、更新与反馈
 
 - [使用手册](docs/usage.md)：当前源码的完整流程、快捷键与排错入口。
-- [v2.1.0 交付说明](docs/release-v2.1.0-2026-11-10.md)：本地 EXE、源码分支、校验与发布验证。
+- [v2.1.0 交付说明](docs/release-v2.1.0-2026-11-10.md)：下载、校验、源码标签与发布验证。
 - [整体使用与界面复核](docs/workspace-polish-2026-11-10.md)：小窗口布局、标定选择、导出画面与真实数据验收。
 - [文件命名、类别标签与逐帧显示](docs/export-labels-2026-11-10.md)：2026-11-10 源码更新及对应验证记录。
 - [标定、区间导出与连续浏览](docs/fusion-sequence-2026-11-10.md)：此前实现与性能测量；其中目录和清单导出方式已由后续命名导出更新，当前操作以使用手册为准。

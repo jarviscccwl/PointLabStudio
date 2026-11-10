@@ -85,7 +85,7 @@ def test_preview_delimiter_and_header_override(tmp_path):
 def test_dialog_named_mapping_and_headerless_confirmation(tmp_path):
     from PySide6.QtWidgets import QApplication, QDialogButtonBox
     from ui.widgets.text_cloud_import import TextCloudImportDialog
-    app = QApplication.instance() or QApplication([])
+    _app = QApplication.instance() or QApplication([])
     path = tmp_path / 'mapped.csv'
     path.write_text('z,x,y,quality\n30,10,20,9\n', encoding='utf-8')
     dialog = TextCloudImportDialog(str(path))

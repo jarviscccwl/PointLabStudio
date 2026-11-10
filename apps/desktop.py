@@ -14,6 +14,24 @@ def build_parser():
     return parser
 
 
+def fit_window_to_screen(window):
+    """把启动窗口收进当前屏幕可用区域，兼容小屏与旧显示器配置。"""
+    from PySide6.QtWidgets import QApplication
+
+    screen = window.screen() or QApplication.primaryScreen()
+    if screen is None:
+        return
+    available = screen.availableGeometry()
+    geometry = window.frameGeometry()
+    width = min(geometry.width(), available.width())
+    height = min(geometry.height(), available.height())
+    left = max(available.left(), min(geometry.left(), available.right() - width + 1))
+    top = max(available.top(), min(geometry.top(), available.bottom() - height + 1))
+    window.setMinimumSize(min(window.minimumWidth(), width),
+                          min(window.minimumHeight(), height))
+    window.setGeometry(left, top, width, height)
+
+
 def main(argv=None):
     arguments = list(sys.argv[1:] if argv is None else argv)
     if len(arguments) in (2, 4) and arguments[0] == "--splash-child":
@@ -63,6 +81,7 @@ def main(argv=None):
 
         splash.set_progress(None, "正在创建工作台…")
         window = MainWindow(theme=theme)
+        fit_window_to_screen(window)
         splash.set_progress(None, "正在准备视图…")
         window.show()
         app.processEvents(QEventLoop.ExcludeUserInputEvents)

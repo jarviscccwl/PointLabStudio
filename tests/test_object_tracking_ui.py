@@ -14,7 +14,7 @@ from PySide6.QtWidgets import QApplication, QComboBox, QPushButton, QSpinBox, QW
 
 from core.io.recording_types import FrameData, FrameRef, RecordingSource, StreamInfo
 from core.model.entities import CloudEntity
-from core.object_tracking import Box3D, Observation, ObjectTrack
+from core.object_tracking import Box3D, Observation
 from ui.widgets.recording_browser import BrowserStream
 
 
@@ -320,7 +320,7 @@ def test_restore_is_path_independent_and_changed_signature_invalidates(controlle
 
 def test_tracking_reads_adjacent_directly_and_preserves_manual_anchor(controller):
     control, browser, app = controller
-    track = select_target(control, browser)
+    select_target(control, browser)
     payload = control.source_state(browser.entries[0].source.path)
     anchor = Observation(11, Box3D((.1, 0, 0), (.8, .8, .8)), True)
     payload["streams"][0]["tracks"][0]["observations"].append(anchor.to_dict())

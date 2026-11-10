@@ -1,7 +1,6 @@
 """Offset index and clock regressions using independently specified EM4 wire bytes."""
 import json
 import os
-from pathlib import Path
 import struct
 from unittest.mock import patch
 

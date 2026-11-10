@@ -1,5 +1,6 @@
 import json
-from pathlib import Path
+import os
+
 import pytest
 
 
@@ -636,7 +637,10 @@ def test_image_sequence_token_is_compact_and_reads_changed_frame_without_travers
     assert frame.value[0, 0].tolist() == [4, 5, 6]
 
 
-def test_image_sequence_token_changes_when_directory_membership_changes(tmp_path):
+def test_image_sequence_token_changes_when_directory_membership_changes(
+    tmp_path, monkeypatch
+):
+    from core.io import recording
     from core.io.recording import open_source
     from PIL import Image
 
@@ -644,6 +648,14 @@ def test_image_sequence_token_changes_when_directory_membership_changes(tmp_path
     source = open_source(str(tmp_path))
     token = source.cache_token()
     Image.new("RGB", (1, 1)).save(tmp_path / "frame2.png")
+    # The token is intentionally cheap: it reports the directory's own stat instead
+    # of enumerating images, and Windows can defer that timestamp refresh after a
+    # create. Drive the stat the token reads so the check does not depend on
+    # filesystem timing.
+    refreshed = type(
+        "_Stat", (), {"st_size": 0, "st_mtime_ns": os.stat(tmp_path).st_mtime_ns + 1}
+    )()
+    monkeypatch.setattr(recording.os, "stat", lambda *_args, **_kwargs: refreshed)
     assert source.cache_token() != token
 
 

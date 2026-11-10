@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from core.cancellation import check_cancel
-from core.io import mcap_reader, pcap_reader, rs_em4
+from core.io import mcap_reader, rs_em4
 
 LIDAR_EXTS = {".pcap", ".pcapng", ".mcap"}
 MSOP_PORTS = {6699}

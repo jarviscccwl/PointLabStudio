@@ -14,7 +14,7 @@ from core.io.recording_types import FrameData
 from core.model.entities import CloudEntity, ScalarField
 from ui.widgets.data_view import ImageView
 from ui.widgets.recording_browser import BrowserStream, RecordingBrowser
-from ui.widgets.recording_export import ExportOptions, RecordingExportController
+from ui.widgets.recording_export import ExportOptions
 from test_recording_navigation import PreviewViewport
 from test_recording_ui import MemorySource, wait_for, dispose_widget
 

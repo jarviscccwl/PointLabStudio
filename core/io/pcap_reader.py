@@ -62,7 +62,7 @@ def _ip_text(raw: bytes) -> str:
     if len(raw) == 4:
         return ".".join(str(b) for b in raw)
     groups = [raw[i] << 8 | raw[i + 1] for i in range(0, 16, 2)]
-    best, run, start = (0, 0, 0), 0, 0
+    best, start = (0, 0, 0), 0
     while start < 8:
         if groups[start] == 0:
             end = start
